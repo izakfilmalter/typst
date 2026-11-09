@@ -132,11 +132,21 @@ fn compile_impl<T: Output>(
 
     let mut history: ArrayVec<T, { MAX_ITERS - 1 }> = ArrayVec::new();
     let mut document: T;
+    // Lean history: keep only the previous document (the next iteration needs its
+    // introspector). Older documents are kept solely for detailed non-convergence
+    // diagnostics and cost a full layout each; set TYPST_FULL_HISTORY to keep them.
+    let lean = std::env::var_os("TYPST_FULL_HISTORY").is_none();
+    let mut iterations = 0usize;
 
     // Relayout until all introspections stabilize.
     // If that doesn't happen within five attempts, we give up.
     loop {
-        let _scope = TimingScope::new(ITER_NAMES[history.len()]);
+        let _scope = TimingScope::new(ITER_NAMES[iterations.min(ITER_NAMES.len() - 1)]);
+        // Keep only memoised results that the previous iteration used: without this,
+        // every relayout of an introspection-heavy document stacks a full cache.
+        if !history.is_empty() {
+            comemo::evict(std::env::var("TYPST_EVICT_AGE").ok().and_then(|v| v.parse().ok()).unwrap_or(0));
+        }
         let introspector = history
             .last()
             .map(|doc| doc.introspector())
@@ -154,9 +164,26 @@ fn compile_impl<T: Output>(
         };
 
         document = T::create(&mut engine, &content, styles)?;
+        if std::env::var_os("TYPST_ITER_LOG").is_some() {
+            let rss = std::fs::read_to_string("/proc/self/status").ok().and_then(|s| {
+                s.lines().find(|l| l.starts_with("VmRSS")).map(|l| l.split_whitespace().nth(1).unwrap_or("").to_string())
+            });
+            eprintln!("typst: iteration {} done, rss {} kB", iterations + 1, rss.unwrap_or_default());
+        }
 
         if timed!("check stabilized", constraint.validate(document.introspector())) {
             sink.extend_from_sink(subsink);
+            break;
+        }
+
+        iterations += 1;
+        if lean && iterations >= MAX_ITERS {
+            sink.extend_from_sink(subsink);
+            sink.warn(warning!(
+                Span::detached(),
+                "document did not converge within five attempts";
+                hint: "set TYPST_FULL_HISTORY=1 for detailed convergence diagnostics"
+            ));
             break;
         }
 
@@ -181,6 +208,9 @@ fn compile_impl<T: Output>(
             break;
         }
 
+        if lean && !history.is_empty() {
+            history.clear();
+        }
         history.push(document);
     }
 
