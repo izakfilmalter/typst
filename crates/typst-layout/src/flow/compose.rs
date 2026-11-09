@@ -2,7 +2,9 @@ use std::num::NonZeroUsize;
 
 use typst_library::diag::{SourceResult, bail};
 use typst_library::engine::Engine;
-use typst_library::foundations::{Content, NativeElement, Packed, Resolve, Smart};
+use typst_library::foundations::{
+    Content, NativeElement, Packed, Resolve, ShowSet, Smart,
+};
 use typst_library::introspection::{
     Counter, CounterDisplayElem, CounterState, CounterUpdate, Location, Locator,
     SplitLocator, Tag,
@@ -777,7 +779,9 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         pod.size.y -= flow_need + separator_need + self.config.footnote.gap;
 
         // Layout the footnote entry.
-        let frames = layout_footnote(self.engine, self.config, &elem, pod)?.into_frames();
+        let mut frames =
+            layout_footnote(self.engine, self.config, &elem, pod)?.into_frames();
+        mark_continuations(self.engine, self.config, &elem, &mut frames)?;
 
         // Find nested footnotes in the entry.
         let nested = find_in_frames::<FootnoteElem>(&frames);
@@ -1069,6 +1073,112 @@ fn layout_footnote(
         }
         fragment
     })
+}
+
+/// Adds the configured continuation cue (see `footnote.entry.continuation`)
+/// to each continued part of a split entry: every frame with content after
+/// the first one with content.
+fn mark_continuations(
+    engine: &mut Engine,
+    config: &Config,
+    elem: &Packed<FootnoteElem>,
+    frames: &mut [Frame],
+) -> SourceResult<()> {
+    let Some(continuation) = &config.footnote.continuation else {
+        return Ok(());
+    };
+    let Some(start) = frames.iter().position(has_content) else {
+        return Ok(());
+    };
+
+    let loc = elem.location().unwrap();
+    let mut cue = None;
+    let mut k = 0;
+    for frame in &mut frames[start + 1..] {
+        if !has_content(frame) {
+            continue;
+        }
+        let cue = match &mut cue {
+            Some(cue) => cue,
+            None => {
+                // The entry's own text styles (but not those of a show rule).
+                let entry = Packed::new(FootnoteEntry::new(elem.clone()));
+                let styles = entry.show_set(config.shared);
+                let content = continuation
+                    .resolve(engine, config.shared, elem)?
+                    .styled_with_map(styles)
+                    .artifact(ArtifactKind::Other)
+                    .spanned(elem.span());
+                cue.insert(content)
+            }
+        };
+
+        // Each cue gets its own well-known locations, distinct from the
+        // entry's (variant 1) and from the other parts' cues.
+        k += 1;
+        let mut marker = crate::layout_frame(
+            engine,
+            cue,
+            Locator::synthesize(loc.variant(1 + k)),
+            config.shared,
+            Region::new(Axes::splat(Abs::inf()), Axes::splat(false)),
+        )?;
+        let marker_baseline = marker.baseline();
+        marker.translate(Point::with_y(-marker_baseline));
+
+        // Hang the cue before the first line of the continued part, aligned
+        // to its baseline.
+        let pos = match first_line(frame) {
+            Some((baseline, _, end)) if config.columns.dir == Dir::RTL => {
+                Point::new(end, baseline)
+            }
+            Some((baseline, start, _)) => Point::new(start - marker.width(), baseline),
+            None => Point::new(-marker.width(), marker_baseline),
+        };
+        frame.push_frame(pos, marker);
+    }
+
+    Ok(())
+}
+
+/// The baseline and horizontal text extent of a frame's first line of text.
+fn first_line(frame: &Frame) -> Option<(Abs, Abs, Abs)> {
+    fn collect(frame: &Frame, offset: Point, out: &mut Vec<(Point, Abs, Abs)>) {
+        for (pos, item) in frame.items() {
+            let pos = offset + *pos;
+            match item {
+                FrameItem::Group(group) => {
+                    // Only follow plain translations; transformed content
+                    // doesn't define a line.
+                    if group.transform.is_identity() {
+                        collect(&group.frame, pos, out);
+                    }
+                }
+                FrameItem::Text(text) => {
+                    out.push((pos, text.width(), text.size));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut runs = vec![];
+    collect(frame, Point::zero(), &mut runs);
+    let top = runs.iter().map(|(pos, ..)| pos.y).min()?;
+    let size = runs.iter().map(|&(.., size)| size).max()?;
+    // Raised text (like a superscript) on the first line has a baseline a
+    // little above the line's, but still well below half the text size; the
+    // next line is at least about one text size further down.
+    let line = runs.iter().filter(|(pos, ..)| pos.y <= top + size * 0.6);
+    let mut baseline = top;
+    let mut start = Abs::inf();
+    let mut end = -Abs::inf();
+    for &(pos, width, _) in line {
+        baseline.set_max(pos.y);
+        start.set_min(pos.x);
+        end.set_max(pos.x + width);
+    }
+    Some((baseline, start, end))
 }
 
 /// Whether the frame has visible content (anything besides tags and links).

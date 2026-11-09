@@ -24,7 +24,9 @@ use typst_library::layout::{
     Abs, ColumnsElem, Dir, Em, Fr, Fragment, Frame, PageElem, PlacementScope, Region,
     Regions, Rel, Size, Spacing,
 };
-use typst_library::model::{FootnoteElem, FootnoteEntry, LineNumberingScope, ParLine};
+use typst_library::model::{
+    FootnoteContinuation, FootnoteElem, FootnoteEntry, LineNumberingScope, ParLine,
+};
 use typst_library::pdf::ArtifactKind;
 use typst_library::routines::{Arenas, FragmentKind, Pair, RealizationKind};
 use typst_library::text::TextElem;
@@ -271,6 +273,7 @@ fn configuration<'x>(
                 })
                 .collect(),
             lane_gutter: shared.resolve(FootnoteEntry::lane_gutter),
+            continuation: shared.get_cloned(FootnoteEntry::continuation),
             expand: regions.expand.x,
         },
         line_numbers: (mode == FlowMode::Root).then(|| LineNumberConfig {
@@ -389,6 +392,8 @@ struct FootnoteConfig {
     lanes: Vec<LaneWidth>,
     /// The horizontal gap between lanes.
     lane_gutter: Abs,
+    /// The cue at the start of a split entry's continued parts.
+    continuation: Option<FootnoteContinuation>,
     /// Whether horizontal expansion is enabled for footnotes.
     expand: bool,
 }

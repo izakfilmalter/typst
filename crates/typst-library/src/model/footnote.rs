@@ -1,14 +1,15 @@
 use std::num::NonZeroUsize;
 use std::str::FromStr;
 
+use comemo::Track;
 use ecow::{EcoString, eco_format};
 use typst_utils::{NonZeroExt, singleton};
 
 use crate::diag::{At, SourceResult, StrResult, bail};
 use crate::engine::Engine;
 use crate::foundations::{
-    Content, Label, NativeElement, Packed, ShowSet, Smart, StyleChain, Styles, cast,
-    elem, scope,
+    Content, Context, Func, Label, NativeElement, Packed, ShowSet, Smart, StyleChain,
+    Styles, cast, elem, scope,
 };
 use crate::introspection::{
     Count, Counter, CounterUpdate, Locatable, Location, QueryLabelIntrospection, Tagged,
@@ -358,6 +359,83 @@ pub struct FootnoteEntry {
     /// ```
     #[default(Em::new(1.0).into())]
     pub indent: Length,
+
+    /// A cue at the start of each continued part of an entry that breaks
+    /// across columns or pages, in paged output.
+    ///
+    /// When an entry doesn't fit where its marker stands, its remainder
+    /// continues at the foot of the next column or page. By default
+    /// (`{none}`), the continued part starts without any label. If set,
+    /// the cue is shown at the first line of each continued part, where the
+    /// entry's number stands on its first line:
+    ///
+    /// - Content is shown as given.
+    /// - A function is called with the footnote (see @footnote.entry.note)
+    ///   and must return content. It is called in the context of the
+    ///   footnote's location, so `{counter(footnote).display()}` yields the
+    ///   footnote's number.
+    ///
+    /// The cue hangs to the left of the continued line (to its right for
+    /// right-to-left text) and ends where the line's text begins, so it
+    /// doesn't displace the text. Include any space that should follow it,
+    /// for example with `{h(0.3em)}`. Entries with a hanging indent (for
+    /// example, a show rule for `footnote.entry` that wraps the entry in
+    /// `{par(hanging-indent: ..)}`) leave the cue room in the place of the
+    /// number; without one, the cue extends into the margin. The cue is laid out with the entry's default text
+    /// styles (smaller text), but not with those set inside a show rule for
+    /// the entry, so set its text properties in the cue itself if needed. It
+    /// is marked as an artifact for accessibility purposes.
+    ///
+    /// ```example
+    /// #set page(height: 100pt)
+    /// #set footnote.entry(
+    ///   continuation: note => [(#counter(footnote).display())#h(0.3em)],
+    /// )
+    /// #show footnote.entry: it => par(hanging-indent: 1.2em, it)
+    ///
+    /// Long#footnote(lorem(24))
+    /// ```
+    pub continuation: Option<FootnoteContinuation>,
+}
+
+/// A cue for the continued part of a split footnote entry.
+#[derive(Debug, Clone, PartialEq, Hash)]
+pub enum FootnoteContinuation {
+    /// Fixed content.
+    Content(Content),
+    /// A function of the footnote.
+    Func(Func),
+}
+
+impl FootnoteContinuation {
+    /// Produce the cue for the given footnote.
+    pub fn resolve(
+        &self,
+        engine: &mut Engine,
+        styles: StyleChain,
+        note: &Packed<FootnoteElem>,
+    ) -> SourceResult<Content> {
+        Ok(match self {
+            Self::Content(content) => content.clone(),
+            Self::Func(func) => func
+                .call(
+                    engine,
+                    Context::new(note.location(), Some(styles)).track(),
+                    [note.clone().pack()],
+                )?
+                .display(),
+        })
+    }
+}
+
+cast! {
+    FootnoteContinuation,
+    self => match self {
+        Self::Content(v) => v.into_value(),
+        Self::Func(v) => v.into_value(),
+    },
+    v: Content => Self::Content(v),
+    v: Func => Self::Func(v),
 }
 
 impl Packed<FootnoteEntry> {
