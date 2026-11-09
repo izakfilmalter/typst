@@ -13,7 +13,7 @@ use crate::foundations::{
 use crate::introspection::{
     Count, Counter, CounterUpdate, Locatable, Location, QueryLabelIntrospection, Tagged,
 };
-use crate::layout::{Em, Length, Ratio};
+use crate::layout::{Em, Length, Ratio, Spacing};
 use crate::model::{DirectLinkElem, Numbering, NumberingPattern, ParElem};
 use crate::text::{LocalName, SuperElem, TextElem, TextSize};
 use crate::visualize::{LineElem, Stroke};
@@ -78,6 +78,36 @@ pub struct FootnoteElem {
     /// ```
     #[default(Numbering::Pattern(NumberingPattern::from_str("1").unwrap()))]
     pub numbering: Numbering,
+
+    /// The zero-based lane in which to place this footnote's entry at the
+    /// foot of the page. Lanes are configured with
+    /// @footnote.entry.lanes[`footnote.entry(lanes: ..)`]; the lane index
+    /// must be smaller than the number of configured lanes.
+    ///
+    /// With `{none}` (the default), the entry spans the full width of the
+    /// footnote area, above any lanes. A footnote that references another
+    /// footnote by label creates no entry, so its lane has no effect. A
+    /// footnote nested in another footnote's entry does not inherit that
+    /// footnote's lane. Lanes are ignored in HTML output.
+    ///
+    /// ```example
+    /// #set page(height: 120pt)
+    /// #set footnote.entry(lanes: (1fr, 1fr))
+    /// #grid(
+    ///   columns: (1fr, 1fr),
+    ///   column-gutter: 1em,
+    ///   [
+    ///     #set footnote(lane: 0)
+    ///     Short#footnote[Left.]
+    ///   ],
+    ///   [
+    ///     #set footnote(lane: 1)
+    ///     Long#footnote[Right.]
+    ///     form#footnote[Right again.]
+    ///   ],
+    /// )
+    /// ```
+    pub lane: Option<usize>,
 
     /// The content to put into the footnote. Can also be the label of another
     /// footnote this one should point to.
@@ -278,6 +308,40 @@ pub struct FootnoteEntry {
     /// ```
     #[default(Em::new(0.5).into())]
     pub gap: Length,
+
+    /// The widths of side-by-side footnote lanes in paged output, from left
+    /// to right. An empty array (the default) disables lanes.
+    ///
+    /// Each width can be a length, a ratio of the footnote area's width (the
+    /// page column's width), or a fraction of the space left after fixed
+    /// lanes and gutters, like grid columns. Lane widths must be positive and,
+    /// together with the gutters, fit the footnote area.
+    ///
+    /// Entries select a lane with @footnote.lane. All lanes share one
+    /// separator and are top-aligned beneath it. Each lane stacks its entries
+    /// independently and the tallest lane determines the height of the
+    /// footnote area. Entries without a lane span the full width and are
+    /// placed between the separator and the lanes. In a multi-column page,
+    /// lanes are local to each page column, just like ordinary footnotes.
+    /// HTML output ignores lanes.
+    ///
+    /// ```example
+    /// #set footnote.entry(
+    ///   lanes: (1fr, 1fr),
+    ///   lane-gutter: 10pt,
+    /// )
+    /// #grid(
+    ///   columns: (1fr, 1fr),
+    ///   column-gutter: 10pt,
+    ///   [Left#footnote(lane: 0)[Left note.]],
+    ///   [Right#footnote(lane: 1)[Right note.]],
+    /// )
+    /// ```
+    pub lanes: Vec<Spacing>,
+
+    /// The horizontal gap between adjacent footnote lanes.
+    #[default(Em::new(1.0).into())]
+    pub lane_gutter: Length,
 
     /// The indent of each footnote entry.
     ///

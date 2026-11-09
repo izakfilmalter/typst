@@ -260,6 +260,15 @@ f23f7a0a0411586163a27c7aff1cb297 footnote-in-columns
 cfaa9e455bd7617f4bb5a28d6b9e6823 footnote-in-place
 bb9f1e98ebd41b9583dff1e84c84c972 footnote-in-table
 1ce4f3ec1d3b83b44bac1b97571d063d footnote-invariant
+4e6d4aff8be0b4fa7530efcfffe80842 footnote-lanes-columns
+04e0fc3a76e80d64d36684c83bd9e728 footnote-lanes-grid-break
+2085c2ec3e0eb282993996ca01c1404b footnote-lanes-migration
+4f2278fbb0ae68ba339f65c578da90cc footnote-lanes-mixed
+7f134fddfe81051c82d14ea2cba306d0 footnote-lanes-nested
+ffa010aaa7fefa29552c90431d4b2c3e footnote-lanes-no-lanes
+19d8285a4caeaceacb424133891da19f footnote-lanes-split
+f879e2a9738a5a998a87f0c2d84c36ae footnote-lanes-unequal
+844c658cd4405e7d3214043c481ce9b8 footnote-lanes-widths
 7ad83c6abcda332ba994963414d487ba footnote-multiple-in-one-line
 a252091f292aed3987302683064498e7 footnote-nested
 502f6c04e65896e5cbc1498b596ffacf footnote-nested-break-across-pages

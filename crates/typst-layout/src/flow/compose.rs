@@ -1,6 +1,6 @@
 use std::num::NonZeroUsize;
 
-use typst_library::diag::SourceResult;
+use typst_library::diag::{SourceResult, bail};
 use typst_library::engine::Engine;
 use typst_library::foundations::{Content, NativeElement, Packed, Resolve, Smart};
 use typst_library::introspection::{
@@ -8,7 +8,7 @@ use typst_library::introspection::{
     SplitLocator, Tag,
 };
 use typst_library::layout::{
-    Abs, Axes, Dir, FixedAlignment, Fragment, Frame, FrameItem, FrameParent, Inherit,
+    Abs, Axes, Dir, FixedAlignment, Fr, Fragment, Frame, FrameItem, FrameParent, Inherit,
     OuterHAlignment, PlacementScope, Point, Region, Regions, Rel, Size,
 };
 use typst_library::model::{
@@ -19,7 +19,8 @@ use typst_syntax::Span;
 use typst_utils::{NonZeroExt, Numeric};
 
 use super::{
-    Config, FlowMode, FlowResult, LineNumberConfig, PlacedChild, Stop, Work, distribute,
+    Config, FlowMode, FlowResult, FootnoteSpill, LaneWidth, LineNumberConfig,
+    PlacedChild, Stop, Work, distribute,
 };
 
 /// Composes the contents of a single page/region. A region can have multiple
@@ -47,7 +48,7 @@ pub fn compose(
         page_insertions: Insertions::default(),
         column_insertions: Insertions::default(),
         work,
-        footnote_spill: None,
+        footnote_spill: vec![],
         footnote_queue: vec![],
     }
     .page(locator, regions)
@@ -73,7 +74,7 @@ pub struct Composer<'a, 'b, 'x, 'y> {
     // footnotes otherwise). For floats, we revisit them anyway, so it's okay to
     // use `work.floats` directly. This is not super clean; probably there's a
     // better way.
-    footnote_spill: Option<std::vec::IntoIter<Frame>>,
+    footnote_spill: Vec<FootnoteSpill>,
     footnote_queue: Vec<Packed<FootnoteElem>>,
 }
 
@@ -176,7 +177,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         self.column_insertions = Insertions::default();
 
         // Process footnote spill.
-        if let Some(spill) = self.work.footnote_spill.take() {
+        for spill in std::mem::take(&mut self.work.footnote_spill) {
             self.footnote_spill(spill, regions.base())?;
         }
 
@@ -202,9 +203,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         drop(checkpoint);
 
         self.work.footnotes.extend(self.footnote_queue.drain(..));
-        if let Some(spill) = self.footnote_spill.take() {
-            self.work.footnote_spill = Some(spill);
-        }
+        self.work.footnote_spill = std::mem::take(&mut self.footnote_spill);
 
         let insertions = std::mem::take(&mut self.column_insertions);
         let mut output = insertions.finalize(self.work, self.config, inner);
@@ -434,10 +433,18 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
             return Ok(());
         }
 
-        // If there is already a queued spill or footnote, queue this one as
-        // well. We don't want to disrupt the order.
+        let lane = elem.lane.get(self.config.shared);
+        let (x, width) = footnote_lane(self.config, lane, regions.size.x, elem.span())?;
+
+        // Preserve entry order within each lane (and within the full-width
+        // listing), without blocking unrelated lanes behind a long entry.
         let area = &mut self.column_insertions;
-        if self.footnote_spill.is_some() || !self.footnote_queue.is_empty() {
+        if self.footnote_spill.iter().any(|spill| spill.lane == lane)
+            || self
+                .footnote_queue
+                .iter()
+                .any(|note| note.lane.get(self.config.shared) == lane)
+        {
             self.footnote_queue.push(elem);
             return Ok(());
         }
@@ -446,7 +453,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         // separator.
         let mut separator = None;
         let mut separator_need = Abs::zero();
-        if area.footnotes.is_empty() {
+        if area.footnote_separator.is_none() {
             let frame =
                 layout_footnote_separator(self.engine, self.config, regions.base())?;
             separator_need += self.config.footnote.clearance + frame.height();
@@ -455,7 +462,11 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
 
         // Prepare regions for the footnote.
         let mut pod = *regions;
+        pod.size.x = width;
         pod.expand.y = false;
+        // Other lanes may already reserve more height than this lane uses.
+        // Reuse that space before increasing the shared insertion height.
+        pod.size.y += area.lane_slack(lane);
         pod.size.y -= flow_need + separator_need + self.config.footnote.gap;
 
         // Layout the footnote entry.
@@ -470,7 +481,6 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         // Extract the first frame.
         let mut iter = frames.into_iter();
         let first = iter.next().unwrap();
-        let note_need = self.config.footnote.gap + first.height();
 
         // If the first frame is empty, then none of its content fit. If
         // possible, we then migrate the origin frame to the next region to
@@ -516,13 +526,14 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         }
 
         // Save the footnote's frame.
-        area.push_footnote(self.config, first);
+        let before = area.height();
+        area.push_footnote(self.config, lane, x, first);
         area.skips.push(loc);
-        regions.size.y -= note_need;
+        regions.size.y -= area.height() - before;
 
         // Save the spill.
         if !iter.as_slice().is_empty() {
-            self.footnote_spill = Some(iter);
+            self.footnote_spill.push(FootnoteSpill { lane, x, frames: iter });
         }
 
         // Lay out nested footnotes.
@@ -550,22 +561,24 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
     /// Handles spillover from a footnote.
     fn footnote_spill(
         &mut self,
-        mut iter: std::vec::IntoIter<Frame>,
+        mut spill: FootnoteSpill,
         base: Size,
     ) -> SourceResult<()> {
         let area = &mut self.column_insertions;
 
         // Create and save the separator.
-        let separator = layout_footnote_separator(self.engine, self.config, base)?;
-        area.push_footnote_separator(self.config, separator);
+        if area.footnote_separator.is_none() {
+            let separator = layout_footnote_separator(self.engine, self.config, base)?;
+            area.push_footnote_separator(self.config, separator);
+        }
 
         // Save the footnote's frame.
-        let frame = iter.next().unwrap();
-        area.push_footnote(self.config, frame);
+        let frame = spill.frames.next().unwrap();
+        area.push_footnote(self.config, spill.lane, spill.x, frame);
 
         // Save the spill.
-        if !iter.as_slice().is_empty() {
-            self.footnote_spill = Some(iter);
+        if !spill.frames.as_slice().is_empty() {
+            self.footnote_spill.push(spill);
         }
 
         Ok(())
@@ -583,6 +596,59 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
     pub fn insertion_width(&self) -> Abs {
         self.column_insertions.width.max(self.page_insertions.width)
     }
+}
+
+/// Resolves the horizontal offset and width of a footnote lane within the
+/// footnote area of the given width. Entries without a lane span the full
+/// width.
+fn footnote_lane(
+    config: &Config,
+    lane: Option<usize>,
+    width: Abs,
+    span: Span,
+) -> SourceResult<(Abs, Abs)> {
+    let Some(lane) = lane else { return Ok((Abs::zero(), width)) };
+    let lanes = &config.footnote.lanes;
+    let gutter = config.footnote.lane_gutter;
+    if lane >= lanes.len() {
+        bail!(
+            span, "footnote lane {lane} does not exist";
+            hint: "{} lanes are configured with `footnote.entry(lanes: ..)`", lanes.len();
+        );
+    }
+    if !width.is_finite() {
+        bail!(span, "footnote lanes require a finite page width");
+    }
+    if gutter < Abs::zero() {
+        bail!(span, "footnote lane gutter must not be negative");
+    }
+
+    // Distribute the space left by fixed lanes and gutters among fractional
+    // lanes, just like grid columns.
+    let mut fixed = gutter * (lanes.len() - 1) as f64;
+    let mut fr = Fr::zero();
+    for sizing in lanes {
+        match *sizing {
+            LaneWidth::Rel(rel) => fixed += rel.relative_to(width),
+            LaneWidth::Fr(v) => fr += v,
+        }
+    }
+    let remaining = width - fixed;
+    if !remaining.fits(Abs::zero()) || !fr.get().is_finite() {
+        bail!(span, "footnote lanes and gutters are wider than the footnote area");
+    }
+
+    let resolve = |sizing: &LaneWidth| match *sizing {
+        LaneWidth::Rel(rel) => rel.relative_to(width),
+        LaneWidth::Fr(v) => v.share(fr, remaining),
+    };
+
+    let x = lanes[..lane].iter().map(|s| resolve(s) + gutter).sum();
+    let size = resolve(&lanes[lane]);
+    if size <= Abs::zero() {
+        bail!(span, "footnote lane {lane} has no width");
+    }
+    Ok((x, size))
 }
 
 /// Lay out the footnote separator, typically a line.
@@ -633,7 +699,8 @@ fn layout_footnote(
 struct Insertions<'a, 'b> {
     top_floats: Vec<(&'b PlacedChild<'a>, Frame)>,
     bottom_floats: Vec<(&'b PlacedChild<'a>, Frame)>,
-    footnotes: Vec<Frame>,
+    footnotes: Vec<(Option<usize>, Abs, Frame)>,
+    lane_heights: Vec<Abs>,
     footnote_separator: Option<Frame>,
     top_size: Abs,
     bottom_size: Abs,
@@ -664,10 +731,36 @@ impl<'a, 'b> Insertions<'a, 'b> {
     }
 
     /// Add a footnote to the bottom area.
-    fn push_footnote(&mut self, config: &Config, frame: Frame) {
-        self.width.set_max(frame.width());
-        self.bottom_size += config.footnote.gap + frame.height();
-        self.footnotes.push(frame);
+    fn push_footnote(
+        &mut self,
+        config: &Config,
+        lane: Option<usize>,
+        x: Abs,
+        frame: Frame,
+    ) {
+        self.width.set_max(x + frame.width());
+        let amount = config.footnote.gap + frame.height();
+        if let Some(lane) = lane {
+            let before = self.lanes_height();
+            self.lane_heights.resize(config.footnote.lanes.len(), Abs::zero());
+            self.lane_heights[lane] += amount;
+            self.bottom_size += self.lanes_height() - before;
+        } else {
+            self.bottom_size += amount;
+        }
+        self.footnotes.push((lane, x, frame));
+    }
+
+    /// The height reserved for all lanes together.
+    fn lanes_height(&self) -> Abs {
+        self.lane_heights.iter().copied().max().unwrap_or_default()
+    }
+
+    /// Space that this lane can use without growing the insertion area.
+    fn lane_slack(&self, lane: Option<usize>) -> Abs {
+        lane.map_or(Abs::zero(), |lane| {
+            self.lanes_height() - self.lane_heights.get(lane).copied().unwrap_or_default()
+        })
     }
 
     /// Add a footnote separator to the bottom area.
@@ -746,11 +839,22 @@ impl<'a, 'b> Insertions<'a, 'b> {
             output.push_frame(Point::with_y(y), frame);
         }
 
-        for frame in self.footnotes {
+        // Full-width entries precede all lane entries, regardless of marker
+        // order. Within each listing, preserve the original entry order.
+        for (_, _, frame) in self.footnotes.iter().filter(|(lane, _, _)| lane.is_none()) {
             offset_bottom += config.footnote.gap;
             let y = offset_bottom;
             offset_bottom += frame.height();
-            output.push_frame(Point::with_y(y), frame);
+            output.push_frame(Point::with_y(y), frame.clone());
+        }
+
+        let mut offsets = vec![offset_bottom; self.lane_heights.len()];
+        for (lane, x, frame) in self.footnotes {
+            let Some(lane) = lane else { continue };
+            offsets[lane] += config.footnote.gap;
+            let y = offsets[lane];
+            offsets[lane] += frame.height();
+            output.push_frame(Point::new(x, y), frame);
         }
 
         output

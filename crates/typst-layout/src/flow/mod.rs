@@ -21,8 +21,8 @@ use typst_library::introspection::{
     Introspector, Location, Locator, LocatorLink, SplitLocator, Tag,
 };
 use typst_library::layout::{
-    Abs, ColumnsElem, Dir, Em, Fragment, Frame, PageElem, PlacementScope, Region,
-    Regions, Rel, Size,
+    Abs, ColumnsElem, Dir, Em, Fr, Fragment, Frame, PageElem, PlacementScope, Region,
+    Regions, Rel, Size, Spacing,
 };
 use typst_library::model::{FootnoteElem, FootnoteEntry, LineNumberingScope, ParLine};
 use typst_library::pdf::ArtifactKind;
@@ -262,6 +262,15 @@ fn configuration<'x>(
                 .artifact(ArtifactKind::Other),
             clearance: shared.resolve(FootnoteEntry::clearance),
             gap: shared.resolve(FootnoteEntry::gap),
+            lanes: shared
+                .get_ref(FootnoteEntry::lanes)
+                .iter()
+                .map(|width| match *width {
+                    Spacing::Rel(rel) => LaneWidth::Rel(rel.resolve(shared)),
+                    Spacing::Fr(fr) => LaneWidth::Fr(fr),
+                })
+                .collect(),
+            lane_gutter: shared.resolve(FootnoteEntry::lane_gutter),
             expand: regions.expand.x,
         },
         line_numbers: (mode == FlowMode::Root).then(|| LineNumberConfig {
@@ -301,7 +310,7 @@ struct Work<'a, 'b> {
     /// Queued footnotes that didn't fit in previous regions.
     footnotes: EcoVec<Packed<FootnoteElem>>,
     /// Spilled frames of a footnote that didn't fully fit. Similar to `spill`.
-    footnote_spill: Option<std::vec::IntoIter<Frame>>,
+    footnote_spill: Vec<FootnoteSpill>,
     /// Queued tags that will be attached to the next frame.
     tags: EcoVec<&'a Tag>,
     /// Identifies floats and footnotes that can be skipped if visited because
@@ -318,7 +327,7 @@ impl<'a, 'b> Work<'a, 'b> {
             spill: None,
             floats: EcoVec::new(),
             footnotes: EcoVec::new(),
-            footnote_spill: None,
+            footnote_spill: vec![],
             tags: EcoVec::new(),
             skips: Rc::new(FxHashSet::default()),
         }
@@ -339,7 +348,7 @@ impl<'a, 'b> Work<'a, 'b> {
         self.children.is_empty()
             && self.spill.is_none()
             && self.floats.is_empty()
-            && self.footnote_spill.is_none()
+            && self.footnote_spill.is_empty()
             && self.footnotes.is_empty()
     }
 
@@ -376,8 +385,27 @@ struct FootnoteConfig {
     clearance: Abs,
     /// The gap between footnote entries.
     gap: Abs,
+    /// Lane widths. Relative parts resolve against the column width.
+    lanes: Vec<LaneWidth>,
+    /// The horizontal gap between lanes.
+    lane_gutter: Abs,
     /// Whether horizontal expansion is enabled for footnotes.
     expand: bool,
+}
+
+/// Width of a footnote lane.
+#[derive(Debug, Copy, Clone)]
+enum LaneWidth {
+    Rel(Rel<Abs>),
+    Fr(Fr),
+}
+
+/// Remaining frames of a split entry, retaining its lane across regions.
+#[derive(Clone)]
+struct FootnoteSpill {
+    lane: Option<usize>,
+    x: Abs,
+    frames: std::vec::IntoIter<Frame>,
 }
 
 /// Configuration of columns.
