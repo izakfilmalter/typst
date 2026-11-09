@@ -78,3 +78,21 @@ More text on the same page.
 #set page(width: 200pt, height: 200pt)
 #block(stroke: 0.5pt, columns(2, [#lorem(40) #colbalance()]))
 After the columns.
+
+--- colbalance-long-note-moves paged ---
+// A long entry whose marker is on a paragraph's last lines: at heights where
+// the entry would be split across columns, the layout is rejected; at a
+// lower height the marker's lines move to the second column with the entry.
+// The search must not step over that lower height.
+#set page(width: 220pt, height: 300pt, columns: 2)
+#set text(size: 8pt)
+#lorem(70) And the end#footnote[#lorem(40)] of it.
+
+#lorem(25)
+#colbalance()
+
+#context {
+  for entry in query(footnote.entry) {
+    assert.eq(entry.location().page(), entry.note.location().page())
+  }
+}

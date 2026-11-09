@@ -97,6 +97,7 @@ dfafa6fc90031f3a34ee1bf792bb4918 code-block-basic-syntax
 44690d3aa97b50ab23bd07bc81e6cd69 colbalance-below-float
 ee7ab922c5acb1a81db780170eb8278a colbalance-container
 84c872f76b45a0f8ad14ecc61d0f399f colbalance-footnotes
+661c763d20a7156a4ad7abd87a464afd colbalance-long-note-moves
 5140974836be9bdf04544ec04ae1f840 colbalance-mid-page
 27dd69527309b09520e8b8e41c15824f colbalance-single-column
 664eff95a824869a8e82f64ffac8896f colbalance-snap
