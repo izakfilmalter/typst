@@ -53,6 +53,8 @@ pub fn compose(
         deferred: vec![],
         cuts: vec![],
         uncuttable: vec![],
+        balance: None,
+        pending: 0,
     }
     .page(locator, regions)
 }
@@ -69,7 +71,8 @@ pub struct Composer<'a, 'b, 'x, 'y> {
     pub engine: &'x mut Engine<'y>,
     pub work: &'x mut Work<'a, 'b>,
     pub config: &'x Config<'x>,
-    column: usize,
+    /// The index of the column being laid out.
+    pub column: usize,
     page_base: Size,
     page_insertions: Insertions<'a, 'b>,
     column_insertions: Insertions<'a, 'b>,
@@ -92,6 +95,15 @@ pub struct Composer<'a, 'b, 'x, 'y> {
     /// Footnotes of the current column whose breakable block can't usefully
     /// be cut above the marker.
     pub uncuttable: Vec<Location>,
+    /// Set by the distributor when it reaches a column balance marker, with
+    /// the marker's height step. The columns after the marker's column stay
+    /// empty, and [`Self::page`] then balances the columns.
+    pub balance: Option<Option<Abs>>,
+    /// The number of insertions (queued floats and footnotes, split footnote
+    /// entries) that were pending at the ends of the region's columns, summed
+    /// over the columns. Used to reject balanced layouts that displace
+    /// insertions more than the unbalanced layout.
+    pending: usize,
 }
 
 /// How a footnote's entry is processed.
@@ -119,14 +131,17 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         // This loop can restart region layout when requested to do so by a
         // `Stop`. This happens when there is a parent-scoped float.
         let checkpoint = self.work.clone();
-        let output = loop {
+        let initial = (self.footnote_spill.clone(), self.footnote_queue.clone());
+        let (output, pod) = loop {
             // Shrink the available space by the space used by page
             // insertions.
             let mut pod = regions;
             pod.size.y -= self.page_insertions.height();
 
-            match self.page_contents(locator.relayout(), pod) {
-                Ok(frame) => break frame,
+            self.balance = None;
+            self.pending = 0;
+            match self.page_contents(locator.relayout(), pod, None) {
+                Ok(frame) => break (frame, pod),
                 Err(Stop::Finish(_)) => unreachable!(),
                 Err(Stop::Relayout(PlacementScope::Column)) => unreachable!(),
                 Err(Stop::Cut(..)) => unreachable!(),
@@ -137,29 +152,170 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
                 Err(Stop::Error(err)) => return Err(err),
             };
         };
+
+        // Balance the columns if the region ended at a balance marker.
+        let output = match self.balance.take() {
+            Some(snap) if self.config.columns.count > 1 => {
+                self.balance(locator, pod, &checkpoint, initial, output, snap)?
+            }
+            _ => output,
+        };
         drop(checkpoint);
 
         Ok(self.page_insertions.finalize(self.work, self.config, output))
     }
 
+    /// Balances the columns of a region whose (unbalanced) layout `normal`
+    /// ended at a balance marker: searches for the smallest column height at
+    /// which the region's contents up to the marker still fit into its
+    /// columns, with the same insertions as in the unbalanced layout. Page
+    /// insertions (parent-scoped floats) stay as they are.
+    ///
+    /// Heights are multiples of `snap` if given. If no height shorter than
+    /// the full column height fits, the unbalanced layout is kept.
+    fn balance(
+        &mut self,
+        locator: Locator,
+        pod: Regions,
+        checkpoint: &Work<'a, 'b>,
+        initial: (Vec<FootnoteSpill>, Vec<Packed<FootnoteElem>>),
+        normal: Frame,
+        snap: Option<Abs>,
+    ) -> SourceResult<Frame> {
+        let full = pod.size.y;
+        let snap = snap.filter(|snap| *snap > Abs::zero());
+        if !full.is_finite() || full <= Abs::zero() {
+            return Ok(normal);
+        }
+
+        let budget = self.pending;
+        let normal_work = self.work.clone();
+        let page_insertions = self.page_insertions.clone();
+
+        // Candidate heights are `step * k` for `k` in `1..=max`; `max + 1`
+        // stands for the unbalanced layout, which is known to fit.
+        let (step, max) = match snap {
+            Some(snap) => {
+                let max = (full / snap + 1e-6).floor() as usize;
+                let max = if (snap * max as f64).approx_eq(full) {
+                    max.saturating_sub(1)
+                } else {
+                    max
+                };
+                (snap, max)
+            }
+            None => {
+                let step = Abs::pt(0.25);
+                (step, ((full / step).ceil() as usize).saturating_sub(1))
+            }
+        };
+
+        let (mut lo, mut hi) = (0, max + 1);
+        let mut best = None;
+        while hi - lo > 1 {
+            let mid = lo + (hi - lo) / 2;
+            match self.balance_trial(
+                &locator,
+                pod,
+                checkpoint,
+                &initial,
+                step * mid as f64,
+                budget,
+            )? {
+                Some(result) => {
+                    hi = mid;
+                    best = Some(result);
+                }
+                None => lo = mid,
+            }
+        }
+
+        self.page_insertions = page_insertions;
+        self.balance = None;
+        Ok(match best {
+            Some((frame, work)) => {
+                *self.work = work;
+                frame
+            }
+            None => {
+                *self.work = normal_work;
+                normal
+            }
+        })
+    }
+
+    /// Lays out the region's columns with the given `height`. Returns the
+    /// frame and the resulting work if the balance marker was reached in this
+    /// region without displacing more insertions than the `budget`.
+    fn balance_trial(
+        &mut self,
+        locator: &Locator,
+        pod: Regions,
+        checkpoint: &Work<'a, 'b>,
+        initial: &(Vec<FootnoteSpill>, Vec<Packed<FootnoteElem>>),
+        height: Abs,
+        budget: usize,
+    ) -> SourceResult<Option<(Frame, Work<'a, 'b>)>> {
+        let page_insertions = self.page_insertions.clone();
+        *self.work = checkpoint.clone();
+        self.footnote_spill = initial.0.clone();
+        self.footnote_queue = initial.1.clone();
+        self.balance = None;
+        self.pending = 0;
+
+        let result = self.page_contents(locator.relayout(), pod, Some(height));
+        let reached = self.balance.take().is_some();
+        let fits = reached && self.pending <= budget;
+        self.page_insertions = page_insertions;
+        match result {
+            Ok(frame) if fits => Ok(Some((frame, self.work.clone()))),
+            Ok(_) | Err(Stop::Relayout(_) | Stop::Finish(_) | Stop::Cut(..)) => {
+                self.footnote_spill.clear();
+                self.footnote_queue.clear();
+                Ok(None)
+            }
+            Err(Stop::Error(err)) => Err(err),
+        }
+    }
+
     /// Lay out the inner contents of a container/page.
-    fn page_contents(&mut self, locator: Locator, regions: Regions) -> FlowResult<Frame> {
+    ///
+    /// With a `balance` height, the region's columns get that height and
+    /// later regions get at least the full height, so that contents that
+    /// don't fit move on instead of overflowing.
+    fn page_contents(
+        &mut self,
+        locator: Locator,
+        regions: Regions,
+        balance: Option<Abs>,
+    ) -> FlowResult<Frame> {
         // No point in create column regions, if there's just one!
         if self.config.columns.count == 1 {
             return self.column(locator, regions);
         }
 
         // Create a backlog for multi-column layout.
+        let count = self.config.columns.count;
         let column_height = regions.size.y;
-        let backlog: Vec<_> = std::iter::once(&column_height)
-            .chain(regions.backlog)
-            .flat_map(|&h| std::iter::repeat_n(h, self.config.columns.count))
-            .skip(1)
-            .collect();
+        let first = balance.unwrap_or(column_height);
+        let backlog: Vec<_> = match balance {
+            None => std::iter::once(&column_height)
+                .chain(regions.backlog)
+                .flat_map(|&h| std::iter::repeat_n(h, count))
+                .skip(1)
+                .collect(),
+            Some(_) => std::iter::repeat_n(first, count - 1)
+                .chain(
+                    std::iter::once(&column_height)
+                        .chain(regions.backlog)
+                        .flat_map(|&h| std::iter::repeat_n(h, count)),
+                )
+                .collect(),
+        };
 
         // Subregions for column layout.
         let mut inner = Regions {
-            size: Size::new(self.config.columns.width, column_height),
+            size: Size::new(self.config.columns.width, first),
             backlog: &backlog,
             expand: Axes::new(true, regions.expand.y),
             ..regions
@@ -176,9 +332,21 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         let mut locator = locator.split();
 
         // Lay out the columns and stitch them together.
-        for i in 0..self.config.columns.count {
+        for i in 0..count {
             self.column = i;
-            let frame = self.column(locator.next(&()), inner)?;
+            let locator = locator.next(&());
+
+            // Columns after a balance marker stay empty.
+            let frame = if self.balance.is_some() {
+                let height = if regions.expand.y { inner.size.y } else { Abs::zero() };
+                Frame::soft(Size::new(self.config.columns.width, height))
+            } else {
+                let frame = self.column(locator, inner)?;
+                self.pending += self.work.floats.len()
+                    + self.work.footnotes.len()
+                    + self.work.footnote_spill.len();
+                frame
+            };
 
             if !regions.expand.y {
                 output.size_mut().y.set_max(frame.height());
@@ -234,6 +402,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
             let mut pod = regions;
             pod.size.y -= self.column_insertions.height();
 
+            self.balance = None;
             match self.column_contents(pod) {
                 Ok(frame) => {
                     // An entry must never precede its marker. If a marker

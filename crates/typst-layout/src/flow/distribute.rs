@@ -140,6 +140,7 @@ impl<'a, 'b> Distributor<'a, 'b, '_, '_, '_> {
             Child::Placed(placed) => self.placed(placed)?,
             Child::Flush => self.flush()?,
             Child::Break(weak) => self.break_(*weak)?,
+            Child::Balance(snap) => self.balance(*snap)?,
         }
         Ok(())
     }
@@ -541,6 +542,37 @@ impl<'a, 'b> Distributor<'a, 'b, '_, '_, '_> {
             return Err(Stop::Finish(true));
         }
         Ok(())
+    }
+
+    /// Processes a column balance marker: the region ends here and the
+    /// composer is told to balance its columns (see
+    /// [`Composer::balance`](super::compose)). Weak spacing, weak breaks and
+    /// tags directly after the marker stay in this region, so that a page
+    /// break following the marker doesn't produce an empty page.
+    ///
+    /// The marker has no effect with a single column or if nothing has been
+    /// placed in the region yet.
+    fn balance(&mut self, snap: Option<Abs>) -> FlowResult<()> {
+        if self.composer.config.columns.count == 1
+            || (self.composer.column == 0
+                && !self.items.iter().any(|item| matches!(item, Item::Frame(..))))
+        {
+            return Ok(());
+        }
+
+        self.composer.work.advance();
+        while let Some(child) = self.composer.work.head() {
+            match child {
+                Child::Tag(tag) => self.tag(tag),
+                Child::Rel(_, 1..) | Child::Fr(_, 1..) | Child::Flush => {}
+                Child::Break(true) | Child::Balance(_) => {}
+                _ => break,
+            }
+            self.composer.work.advance();
+        }
+
+        self.composer.balance = Some(snap);
+        Err(Stop::Finish(true))
     }
 
     /// Arranges the produced items into an output frame.

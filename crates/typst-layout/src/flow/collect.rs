@@ -12,9 +12,9 @@ use typst_library::introspection::{
     Introspector, Location, Locator, LocatorLink, SplitLocator, Tag, TagElem,
 };
 use typst_library::layout::{
-    Abs, AlignElem, Alignment, Axes, BlockElem, ColbreakElem, FixedAlignment, FlushElem,
-    Fr, Fragment, Frame, FrameParent, Inherit, PagebreakElem, PlaceElem, PlacementScope,
-    Ratio, Region, Regions, Rel, Size, Sizing, Spacing, VElem,
+    Abs, AlignElem, Alignment, Axes, BlockElem, ColbalanceElem, ColbreakElem,
+    FixedAlignment, FlushElem, Fr, Fragment, Frame, FrameParent, Inherit, PagebreakElem,
+    PlaceElem, PlacementScope, Ratio, Region, Regions, Rel, Size, Sizing, Spacing, VElem,
 };
 use typst_library::model::ParElem;
 use typst_library::routines::Pair;
@@ -91,6 +91,9 @@ impl<'a> Collector<'a, '_, '_> {
             } else if let Some(elem) = child.to_packed::<ColbreakElem>() {
                 self.output.push(Child::Break(elem.weak.get(styles)));
                 self.par_situation = ParSituation::First;
+            } else if let Some(elem) = child.to_packed::<ColbalanceElem>() {
+                let snap = elem.snap.get(styles).map(|snap| snap.resolve(styles));
+                self.output.push(Child::Balance(snap));
             } else if child.is::<PagebreakElem>() {
                 bail!(
                     child.span(), "pagebreaks are not allowed inside of containers";
@@ -364,6 +367,9 @@ pub enum Child<'a> {
     Flush,
     /// An explicit column break.
     Break(bool),
+    /// A column balance marker with an optional height step, see
+    /// [`ColbalanceElem`].
+    Balance(Option<Abs>),
 }
 
 /// A child that encapsulates a layouted line of a paragraph.

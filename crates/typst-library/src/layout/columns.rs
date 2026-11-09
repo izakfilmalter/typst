@@ -6,10 +6,10 @@ use crate::layout::{Length, Ratio, Rel};
 /// Separates a region into multiple equally sized columns.
 ///
 /// The `column` function lets you separate the interior of any container into
-/// multiple columns. It will currently not balance the height of the columns.
+/// multiple columns. It will not balance the height of the columns by itself.
 /// Instead, the columns will take up the height of their container or the
-/// remaining height on the page. Support for balanced columns is planned for
-/// the future.
+/// remaining height on the page. Use @colbalance to balance the columns up to
+/// a point.
 ///
 /// When arranging content across multiple columns, use @colbreak to explicitly
 /// continue in the next column.
@@ -102,4 +102,49 @@ pub struct ColbreakElem {
     /// already empty.
     #[default(false)]
     pub weak: bool,
+}
+
+/// Balances the columns of the current page or container up to this point.
+///
+/// The content of the current page's columns (or the columns of the enclosing
+/// @columns container) up to the marker is laid out into columns of equal,
+/// minimal height. Each column holds its share of the text together with the
+/// footnote entries of its markers, so text plus notes end level in all
+/// columns. The rest of the page stays empty: content after the marker
+/// continues on the next page (or, in a container, below the container, which
+/// shrinks to the balanced height).
+///
+/// Parent-scoped floats that were already placed on the page, such as a title
+/// spanning both columns, stay where they are; only the columns below them are
+/// balanced. Footnote rules still hold: an entry is placed in the same column
+/// as its marker, and widow/orphan prevention and sticky blocks are respected.
+/// If no height shorter than the full column height fits the content, the
+/// columns are laid out as without balancing.
+///
+/// In a single-column layout, this does nothing.
+///
+/// = Example <example>
+/// ```example
+/// #set page(columns: 2, height: 120pt)
+/// Preliminary findings from our
+/// ongoing research project have
+/// revealed a hitherto unknown
+/// phenomenon of extraordinary
+/// significance.
+/// #colbalance()
+/// ```
+#[elem(title = "Column Balance")]
+pub struct ColbalanceElem {
+    /// If set, the balanced column height is a whole multiple of this length,
+    /// measured from the top of the columns. With a fixed line pitch, setting
+    /// this to the pitch keeps the baselines of a balanced page on the same
+    /// grid as those of a full page.
+    ///
+    /// ```example
+    /// #set page(columns: 2, height: 120pt)
+    /// #set par(leading: 0.65em)
+    /// #lorem(30)
+    /// #colbalance(snap: 1.65em)
+    /// ```
+    pub snap: Option<Length>,
 }

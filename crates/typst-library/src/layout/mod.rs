@@ -88,6 +88,7 @@ pub fn define(global: &mut Scope) {
     global.define_elem::<GridElem>();
     global.define_elem::<ColumnsElem>();
     global.define_elem::<ColbreakElem>();
+    global.define_elem::<ColbalanceElem>();
     global.define_elem::<PlaceElem>();
     global.define_elem::<AlignElem>();
     global.define_elem::<PadElem>();
