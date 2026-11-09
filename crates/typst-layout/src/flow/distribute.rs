@@ -1,9 +1,11 @@
-use typst_library::introspection::Tag;
+use typst_library::introspection::{Location, Tag};
 use typst_library::layout::{
-    Abs, Axes, FixedAlignment, Fr, Frame, FrameItem, Point, Region, Regions, Rel, Size,
+    Abs, Axes, FixedAlignment, Fr, Frame, FrameItem, PlacementScope, Point, Region,
+    Regions, Rel, Size,
 };
 use typst_utils::Numeric;
 
+use super::compose::has_content;
 use super::{
     Child, Composer, FlowResult, LineChild, MultiChild, MultiSpill, PlacedChild,
     SingleChild, Stop, Work,
@@ -305,8 +307,14 @@ impl<'a, 'b> Distributor<'a, 'b, '_, '_, '_> {
 
         // Handle fractionally sized blocks.
         if let Some(fr) = single.fr {
-            self.composer
-                .footnotes(&self.regions, &frame, Abs::zero(), false, true)?;
+            self.composer.footnotes(
+                &self.regions,
+                &frame,
+                Abs::zero(),
+                false,
+                true,
+                false,
+            )?;
             self.flush_tags();
             self.items.push(Item::Fr(fr, 0, Some(single)));
             return Ok(());
@@ -329,8 +337,13 @@ impl<'a, 'b> Distributor<'a, 'b, '_, '_, '_> {
             return Err(Stop::Finish(false));
         }
 
-        // Lay out the block.
-        let (frame, spill) = multi.layout(self.composer.engine, self.regions)?;
+        // Lay out the block, breaking early if a footnote requires it.
+        let id = multi.id();
+        let mut regions = self.regions;
+        if let Some(cap) = self.composer.cut(id) {
+            regions.size.y.set_min(cap);
+        }
+        let (frame, spill) = multi.layout(self.composer.engine, regions)?;
         if frame.is_empty()
             && spill.as_ref().is_some_and(|s| s.exist_non_empty_frame)
             && self.regions.may_progress()
@@ -341,7 +354,14 @@ impl<'a, 'b> Distributor<'a, 'b, '_, '_, '_> {
             return Err(Stop::Finish(false));
         }
 
-        self.frame(frame, multi.align, multi.sticky, true)?;
+        match self.frame(frame, multi.align, multi.sticky, true) {
+            Err(Stop::Cut(y, loc)) => {
+                let pod = cut_regions(regions, y);
+                let (trial, _) = multi.layout(self.composer.engine, pod)?;
+                return self.cut(id, pod.size.y, loc, &trial);
+            }
+            result => result?,
+        }
 
         // If the block didn't fully fit into the current region, save it into
         // the `spill` and finish the region.
@@ -362,10 +382,24 @@ impl<'a, 'b> Distributor<'a, 'b, '_, '_, '_> {
             return Err(Stop::Finish(false));
         }
 
-        // Lay out the spilled remains.
+        // Lay out the spilled remains, breaking early if a footnote requires
+        // it.
         let align = spill.align();
-        let (frame, spill) = spill.layout(self.composer.engine, self.regions)?;
-        self.frame(frame, align, false, true)?;
+        let id = spill.id();
+        let mut regions = self.regions;
+        if let Some(cap) = self.composer.cut(id) {
+            regions.size.y.set_min(cap);
+        }
+        let trial_spill = spill.clone();
+        let (frame, spill) = spill.layout(self.composer.engine, regions)?;
+        match self.frame(frame, align, false, true) {
+            Err(Stop::Cut(y, loc)) => {
+                let pod = cut_regions(regions, y);
+                let (trial, _) = trial_spill.layout(self.composer.engine, pod)?;
+                return self.cut(id, pod.size.y, loc, &trial);
+            }
+            result => result?,
+        }
 
         // If there's still more, save it into the `spill` and finish the
         // region.
@@ -375,6 +409,27 @@ impl<'a, 'b> Distributor<'a, 'b, '_, '_, '_> {
         }
 
         Ok(())
+    }
+
+    /// Handles a [`Stop::Cut`] for the breakable block `id`: the entry of
+    /// footnote `loc` doesn't fit below its marker. If breaking the block at
+    /// `cap` (above the marker's line) makes progress, i.e. the `trial` frame
+    /// laid out with that limit keeps some content here or the block can move
+    /// on as a whole, remember the limit. Otherwise, the entry is queued as
+    /// usual. Either way, the column is laid out again.
+    fn cut(
+        &mut self,
+        id: usize,
+        cap: Abs,
+        loc: Location,
+        trial: &Frame,
+    ) -> FlowResult<()> {
+        if has_content(trial) || self.regions.may_progress() {
+            self.composer.cuts.push((id, cap));
+        } else {
+            self.composer.uncuttable.push(loc);
+        }
+        Err(Stop::Relayout(PlacementScope::Column))
     }
 
     /// Processes an in-flow frame, generated from a line or block.
@@ -423,6 +478,7 @@ impl<'a, 'b> Distributor<'a, 'b, '_, '_, '_> {
             frame.height(),
             breakable,
             true,
+            breakable,
         )?;
 
         // Push an item for the frame.
@@ -451,8 +507,14 @@ impl<'a, 'b> Distributor<'a, 'b, '_, '_, '_> {
             self.regions.size.y -= weak_spacing;
         } else {
             let frame = placed.layout(self.composer.engine, self.regions.base())?;
-            self.composer
-                .footnotes(&self.regions, &frame, Abs::zero(), true, true)?;
+            self.composer.footnotes(
+                &self.regions,
+                &frame,
+                Abs::zero(),
+                true,
+                true,
+                false,
+            )?;
             self.flush_tags();
             self.items.push(Item::Placed(frame, placed));
         }
@@ -636,4 +698,13 @@ impl<'a, 'b> Distributor<'a, 'b, '_, '_, '_> {
         *self.composer.work = snapshot.work;
         self.items.truncate(snapshot.items);
     }
+}
+
+/// Limits the first region so that a breakable block breaks above the line
+/// whose footnote marker sits at height `y`. Markers sit on their line's
+/// baseline, which is also the bottom of the line with the default text
+/// edges, so we cut slightly above it.
+fn cut_regions(mut regions: Regions, y: Abs) -> Regions {
+    regions.size.y.set_min((y - Abs::pt(0.01)).max(Abs::zero()));
+    regions
 }

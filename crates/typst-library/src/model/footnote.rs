@@ -317,8 +317,12 @@ pub struct FootnoteEntry {
     /// lanes and gutters, like grid columns. Lane widths must be positive and,
     /// together with the gutters, fit the footnote area.
     ///
-    /// Entries select a lane with @footnote.lane. All lanes share one
-    /// separator and are top-aligned beneath it. Each lane stacks its entries
+    /// Entries select a lane with @footnote.lane. Lanes are top-aligned
+    /// beneath the @footnote.entry.separator[separator]: each occupied lane
+    /// has its own separator, laid out against the lane's width and placed at
+    /// the lane's left edge, so no separator stands above an empty lane. If
+    /// there are full-width entries (without a lane), a single separator spans
+    /// the footnote area above them instead. Each lane stacks its entries
     /// independently and the tallest lane determines the height of the
     /// footnote area. Entries without a lane span the full width and are
     /// placed between the separator and the lanes. In a multi-column page,

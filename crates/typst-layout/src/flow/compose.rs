@@ -50,6 +50,9 @@ pub fn compose(
         work,
         footnote_spill: vec![],
         footnote_queue: vec![],
+        deferred: vec![],
+        cuts: vec![],
+        uncuttable: vec![],
     }
     .page(locator, regions)
 }
@@ -76,6 +79,38 @@ pub struct Composer<'a, 'b, 'x, 'y> {
     // better way.
     footnote_spill: Vec<FootnoteSpill>,
     footnote_queue: Vec<Packed<FootnoteElem>>,
+    /// Footnotes of the current column whose entries were laid out although
+    /// their markers ended up in a later region (e.g. because orphan
+    /// prevention or a sticky block moved the marker's frame after the entry
+    /// was reserved). When the column is laid out again, their markers'
+    /// frames move on instead of reserving the entries again.
+    deferred: Vec<Location>,
+    /// Height limits for the first frame of breakable blocks in the current
+    /// column, by block id. They make a block break above the line of a
+    /// marker whose entry didn't fit below it.
+    pub cuts: Vec<(usize, Abs)>,
+    /// Footnotes of the current column whose breakable block can't usefully
+    /// be cut above the marker.
+    pub uncuttable: Vec<Location>,
+}
+
+/// How a footnote's entry is processed.
+#[derive(Debug, Copy, Clone)]
+struct NoteCtx {
+    /// Space used by in-flow content up to (and possibly including) the
+    /// marker. See [`Composer::footnotes`].
+    flow_need: Abs,
+    /// Whether the marker's frame may migrate if the entry doesn't fit.
+    migratable: bool,
+    /// Whether the marker is in an atomic in-flow frame of the distributor,
+    /// which can always migrate as a whole by finishing the region.
+    atomic: bool,
+    /// Whether the marker is in a frame of a breakable block that can break
+    /// above the marker, see [`Stop::Cut`].
+    cuttable: bool,
+    /// Whether the marker is in this column's flow (rather than in an earlier
+    /// region or another entry), so it must end up in this column.
+    fresh: bool,
 }
 
 impl<'a, 'b> Composer<'a, 'b, '_, '_> {
@@ -94,6 +129,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
                 Ok(frame) => break frame,
                 Err(Stop::Finish(_)) => unreachable!(),
                 Err(Stop::Relayout(PlacementScope::Column)) => unreachable!(),
+                Err(Stop::Cut(..)) => unreachable!(),
                 Err(Stop::Relayout(PlacementScope::Parent)) => {
                     *self.work = checkpoint.clone();
                     continue;
@@ -175,6 +211,9 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
     fn column(&mut self, locator: Locator, regions: Regions) -> FlowResult<Frame> {
         // Reset column insertion when starting a new column.
         self.column_insertions = Insertions::default();
+        self.deferred.clear();
+        self.cuts.clear();
+        self.uncuttable.clear();
 
         // Process footnote spill.
         for spill in std::mem::take(&mut self.work.footnote_spill) {
@@ -184,6 +223,11 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         // This loop can restart column layout when requested to do so by a
         // `Stop`. This happens when there is a column-scoped float.
         let checkpoint = self.work.clone();
+        let initial = (
+            self.column_insertions.clone(),
+            self.footnote_spill.clone(),
+            self.footnote_queue.clone(),
+        );
         let inner = loop {
             // Shrink the available space by the space used by column
             // insertions.
@@ -191,7 +235,26 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
             pod.size.y -= self.column_insertions.height();
 
             match self.column_contents(pod) {
-                Ok(frame) => break frame,
+                Ok(frame) => {
+                    // An entry must never precede its marker. If a marker
+                    // whose entry was reserved here didn't make it into this
+                    // column after all, lay out the column again from
+                    // scratch, letting the marker's frame move on instead.
+                    // Each round defers at least one more footnote, so this
+                    // terminates. A deferred marker's frame only moves on if
+                    // the region may progress, so this can't loop across
+                    // regions either.
+                    let orphans = self.orphaned_footnotes(&frame);
+                    if orphans.is_empty() {
+                        break frame;
+                    }
+                    self.deferred.extend(orphans);
+                    *self.work = checkpoint.clone();
+                    self.column_insertions = initial.0.clone();
+                    self.footnote_spill = initial.1.clone();
+                    self.footnote_queue = initial.2.clone();
+                    continue;
+                }
                 Err(Stop::Finish(_)) => unreachable!(),
                 Err(Stop::Relayout(PlacementScope::Column)) => {
                     *self.work = checkpoint.clone();
@@ -233,8 +296,15 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
     /// distributor.
     fn column_contents(&mut self, regions: Regions) -> FlowResult<Frame> {
         // Process pending footnotes.
+        let ctx = NoteCtx {
+            flow_need: Abs::zero(),
+            migratable: false,
+            atomic: false,
+            cuttable: false,
+            fresh: false,
+        };
         for note in std::mem::take(&mut self.work.footnotes) {
-            self.footnote(note, &mut regions.clone(), Abs::zero(), false)?;
+            self.footnote(note, &mut regions.clone(), ctx)?;
         }
 
         // Process pending floats.
@@ -316,7 +386,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         }
 
         // Handle footnotes in the float.
-        self.footnotes(regions, &frame, need, false, migratable)?;
+        self.footnotes(regions, &frame, need, false, migratable, false)?;
 
         // Determine the float's vertical alignment. We can unwrap the inner
         // `Option` because `Custom(None)` is checked for during collection.
@@ -353,6 +423,11 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
     /// forbidden for the second footnote onwards). It is usually `true` within
     /// the distributor and `false` elsewhere, as the distributor can handle
     /// [`Stop::Finish`] which is returned when migration is requested.
+    ///
+    /// The value of `cuttable` indicates that the frame is the current frame
+    /// of a breakable block in the distributor, which handles
+    /// [`Stop::Cut`] to break the block above a marker whose entry doesn't
+    /// fit below it.
     pub fn footnotes(
         &mut self,
         regions: &Regions,
@@ -360,6 +435,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         flow_need: Abs,
         breakable: bool,
         migratable: bool,
+        cuttable: bool,
     ) -> FlowResult<()> {
         // Footnotes are only supported at the root level.
         if self.config.mode != FlowMode::Root {
@@ -381,10 +457,14 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         let mut relayout = false;
         let mut regions = *regions;
 
-        // The first footnote's origin frame should be migratable if the region
-        // may progress (already checked by the footnote function) and if the
-        // origin frame isn't breakable (checked here).
-        let mut migratable = migratable && !breakable;
+        // The origin frame should be migratable if the region may progress
+        // and if the origin frame isn't breakable. This holds for every
+        // footnote in the frame, not just the first: if a later entry doesn't
+        // fit, the frame migrates and the entries already reserved for it are
+        // orphaned, which `Composer::column` detects and undoes. Whether the
+        // region may progress must be decided before reserving any entries,
+        // as they shrink `regions`.
+        let atomic = migratable && !breakable && regions.may_progress();
 
         for (y, elem) in notes {
             // The amount of space used by the in-flow content that contains the
@@ -393,7 +473,14 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
             let flow_need = if breakable { y } else { flow_need };
 
             // Process the footnote.
-            match self.footnote(elem, &mut regions, flow_need, migratable) {
+            let ctx = NoteCtx {
+                flow_need,
+                migratable: atomic,
+                atomic,
+                cuttable: cuttable && breakable,
+                fresh: true,
+            };
+            match self.footnote(elem, &mut regions, ctx) {
                 // The footnote was already processed or queued.
                 Ok(()) => {}
                 // First handle more footnotes before relayouting.
@@ -401,13 +488,11 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
                 // Either of
                 // - A `Stop::Finish` indicating that the frame's origin element
                 //   should migrate to uphold the footnote invariant.
+                // - A `Stop::Cut` indicating that the breakable origin block
+                //   should break above the marker.
                 // - A fatal error.
                 err => return err,
             }
-
-            // We only migrate the origin frame if the first footnote's first
-            // line didn't fit.
-            migratable = false;
         }
 
         // If this is set, we laid out at least one footnote, so we need a
@@ -424,17 +509,34 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         &mut self,
         elem: Packed<FootnoteElem>,
         regions: &mut Regions,
-        flow_need: Abs,
-        migratable: bool,
+        ctx: NoteCtx,
     ) -> FlowResult<()> {
+        let NoteCtx { flow_need, migratable, .. } = ctx;
+
         // Ignore reference footnotes and already processed ones.
         let loc = elem.location().unwrap();
         if elem.is_ref() || self.skipped(loc) {
             return Ok(());
         }
 
+        // An earlier layout of this column reserved this entry, but then
+        // moved its marker to a later region. Move the marker's frame (or
+        // line, in a breakable block) on right away, so that it is followed
+        // by its entry. If that's impossible, queue the entry.
+        if self.deferred.contains(&loc) {
+            if ctx.atomic && regions.may_progress() {
+                return Err(Stop::Finish(false));
+            } else if self.may_cut(&ctx, loc, regions) {
+                return Err(Stop::Cut(flow_need, loc));
+            }
+            self.footnote_queue.push(elem);
+            return Ok(());
+        }
+
         let lane = elem.lane.get(self.config.shared);
         let (x, width) = footnote_lane(self.config, lane, regions.size.x, elem.span())?;
+
+        let may_cut = self.may_cut(&ctx, loc, regions);
 
         // Preserve entry order within each lane (and within the full-width
         // listing), without blocking unrelated lanes behind a long entry.
@@ -510,9 +612,15 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         // original frame is not relevant for that check. Therefore,
         // `regions.may_progress()` must still be checked separately for
         // migration, regardless of the presence of flow need.
+        //
+        // A breakable origin block can't migrate as a whole, but it can break
+        // above the marker's line, so that line moves to the next region
+        // together with the entry, just like an atomic frame would.
         if first.is_empty() && exist_non_empty_frame {
             if migratable && regions.may_progress() {
                 return Err(Stop::Finish(false));
+            } else if may_cut {
+                return Err(Stop::Cut(flow_need, loc));
             } else if regions.may_progress() || !flow_need.is_zero() {
                 self.footnote_queue.push(elem);
                 return Ok(());
@@ -529,16 +637,34 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         let before = area.height();
         area.push_footnote(self.config, lane, x, first);
         area.skips.push(loc);
+        if ctx.fresh {
+            area.fresh.push(loc);
+        }
+        if let Some(lane) = lane
+            && !area.has_lane_separator(lane)
+        {
+            let base = Size::new(width, regions.base().y);
+            let frame = layout_footnote_separator(self.engine, self.config, base)?;
+            area.push_lane_separator(lane, x, frame);
+        }
         regions.size.y -= area.height() - before;
 
         // Save the spill.
         if !iter.as_slice().is_empty() {
-            self.footnote_spill.push(FootnoteSpill { lane, x, frames: iter });
+            self.footnote_spill
+                .push(FootnoteSpill { lane, x, width, frames: iter });
         }
 
-        // Lay out nested footnotes.
+        // Lay out nested footnotes. Their markers are in this entry, so they
+        // are not tied to the in-flow frame.
+        let nested_ctx = NoteCtx {
+            atomic: false,
+            cuttable: false,
+            fresh: false,
+            ..ctx
+        };
         for (_, note) in nested {
-            match self.footnote(note, regions, flow_need, migratable) {
+            match self.footnote(note, regions, nested_ctx) {
                 // This footnote was already processed or queued.
                 Ok(_) => {}
                 // Footnotes always request a relayout when processed for the
@@ -575,6 +701,13 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         // Save the footnote's frame.
         let frame = spill.frames.next().unwrap();
         area.push_footnote(self.config, spill.lane, spill.x, frame);
+        if let Some(lane) = spill.lane
+            && !area.has_lane_separator(lane)
+        {
+            let base = Size::new(spill.width, base.y);
+            let frame = layout_footnote_separator(self.engine, self.config, base)?;
+            area.push_lane_separator(lane, spill.x, frame);
+        }
 
         // Save the spill.
         if !spill.frames.as_slice().is_empty() {
@@ -582,6 +715,45 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         }
 
         Ok(())
+    }
+
+    /// Whether the breakable block containing the marker of footnote `loc` may
+    /// be asked to break above the marker (see [`Stop::Cut`]). The
+    /// distributor only accepts a cut that makes progress.
+    fn may_cut(&self, ctx: &NoteCtx, loc: Location, regions: &Regions) -> bool {
+        ctx.cuttable && regions.may_break() && !self.uncuttable.contains(&loc)
+    }
+
+    /// The height limit for the first frame of the breakable block `id` in
+    /// this column, if it must break above a marker.
+    pub fn cut(&self, id: usize) -> Option<Abs> {
+        self.cuts.iter().filter(|&&(i, _)| i == id).map(|&(_, cap)| cap).min()
+    }
+
+    /// Footnotes whose entries were laid out for this column's flow, but whose
+    /// markers are not in the column's `inner` frame or its insertions.
+    fn orphaned_footnotes(&self, inner: &Frame) -> Vec<Location> {
+        let fresh = &self.column_insertions.fresh;
+        if fresh.is_empty() {
+            return vec![];
+        }
+
+        let mut found = vec![];
+        find_in_frame_impl::<FootnoteElem>(&mut found, inner, Abs::zero());
+        for insertions in [&self.column_insertions, &self.page_insertions] {
+            for (_, frame) in
+                insertions.top_floats.iter().chain(&insertions.bottom_floats)
+            {
+                find_in_frame_impl::<FootnoteElem>(&mut found, frame, Abs::zero());
+            }
+        }
+        for (_, _, frame) in &self.column_insertions.footnotes {
+            find_in_frame_impl::<FootnoteElem>(&mut found, frame, Abs::zero());
+        }
+
+        let present: Vec<Location> =
+            found.iter().filter_map(|(_, note)| note.location()).collect();
+        fresh.iter().filter(|loc| !present.contains(loc)).copied().collect()
     }
 
     /// Checks whether an insertion was already processed and doesn't need to be
@@ -694,14 +866,27 @@ fn layout_footnote(
     })
 }
 
+/// Whether the frame has visible content (anything besides tags and links).
+pub fn has_content(frame: &Frame) -> bool {
+    frame.items().any(|(_, item)| match item {
+        FrameItem::Group(group) => has_content(&group.frame),
+        FrameItem::Tag(_) | FrameItem::Link(..) => false,
+        _ => true,
+    })
+}
+
 /// An additive list of insertions.
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Insertions<'a, 'b> {
     top_floats: Vec<(&'b PlacedChild<'a>, Frame)>,
     bottom_floats: Vec<(&'b PlacedChild<'a>, Frame)>,
     footnotes: Vec<(Option<usize>, Abs, Frame)>,
     lane_heights: Vec<Abs>,
     footnote_separator: Option<Frame>,
+    /// Separators of occupied lanes: lane, x offset and frame.
+    lane_separators: Vec<(usize, Abs, Frame)>,
+    /// Footnotes laid out for markers in this column's flow.
+    fresh: Vec<Location>,
     top_size: Abs,
     bottom_size: Abs,
     width: Abs,
@@ -770,6 +955,31 @@ impl<'a, 'b> Insertions<'a, 'b> {
         self.footnote_separator = Some(frame);
     }
 
+    /// Whether the lane already has its own separator.
+    fn has_lane_separator(&self, lane: usize) -> bool {
+        self.lane_separators.iter().any(|&(l, _, _)| l == lane)
+    }
+
+    /// The height of the separator row: all separators share it.
+    fn separator_height(&self) -> Abs {
+        self.footnote_separator
+            .iter()
+            .chain(self.lane_separators.iter().map(|(_, _, frame)| frame))
+            .map(Frame::height)
+            .max()
+            .unwrap_or_default()
+    }
+
+    /// Add the separator of a lane that just became occupied. It shares the
+    /// separator row with the (full-width) footnote separator, which must
+    /// have been pushed already.
+    fn push_lane_separator(&mut self, lane: usize, x: Abs, frame: Frame) {
+        let before = self.separator_height();
+        self.width.set_max(x + frame.width());
+        self.lane_separators.push((lane, x, frame));
+        self.bottom_size += self.separator_height() - before;
+    }
+
     /// The combined height of the top and bottom area (including clearances).
     /// Subtracting this from the total region size yields the available space
     /// for distribution.
@@ -791,6 +1001,7 @@ impl<'a, 'b> Insertions<'a, 'b> {
         }
 
         let size = inner.size() + Size::with_y(self.height());
+        let separator_height = self.separator_height();
 
         let mut output = Frame::soft(size);
         let mut offset_top = Abs::zero();
@@ -832,11 +1043,23 @@ impl<'a, 'b> Insertions<'a, 'b> {
             output.push_frame(Point::new(x, y) + delta, frame);
         }
 
+        // With lanes, each occupied lane has its own separator at its left
+        // edge, so that no separator stands above an empty lane. Full-width
+        // entries are listed above all lanes, so if there are any, a single
+        // separator spans the area as without lanes.
         if let Some(frame) = self.footnote_separator {
             offset_bottom += config.footnote.clearance;
             let y = offset_bottom;
-            offset_bottom += frame.height();
-            output.push_frame(Point::with_y(y), frame);
+            offset_bottom += separator_height;
+            if self.lane_separators.is_empty()
+                || self.footnotes.iter().any(|(lane, _, _)| lane.is_none())
+            {
+                output.push_frame(Point::with_y(y), frame);
+            } else {
+                for (_, x, frame) in self.lane_separators {
+                    output.push_frame(Point::new(x, y), frame);
+                }
+            }
         }
 
         // Full-width entries precede all lane entries, regardless of marker

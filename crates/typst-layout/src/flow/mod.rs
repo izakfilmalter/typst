@@ -405,6 +405,7 @@ enum LaneWidth {
 struct FootnoteSpill {
     lane: Option<usize>,
     x: Abs,
+    width: Abs,
     frames: std::vec::IntoIter<Frame>,
 }
 
@@ -452,6 +453,12 @@ enum Stop {
     Finish(bool),
     /// Indicates that the given scope should be relayouted.
     Relayout(PlacementScope),
+    /// Indicates that the entry of the footnote `loc`, whose marker sits at
+    /// height `y` in a breakable frame, does not fit below the marker. The
+    /// breakable block should break above the marker's line so that marker
+    /// and entry can move to the next region together. Only produced for
+    /// frames of breakable blocks and handled by the distributor.
+    Cut(Abs, Location),
     /// A fatal error.
     Error(EcoVec<SourceDiagnostic>),
 }

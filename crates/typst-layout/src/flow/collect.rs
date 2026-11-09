@@ -454,6 +454,11 @@ pub struct MultiChild<'a> {
 }
 
 impl<'a> MultiChild<'a> {
+    /// Identifies this child within one flow layout, also across its spills.
+    pub fn id(&self) -> usize {
+        self as *const Self as usize
+    }
+
     /// Build the child's frames given regions.
     pub fn layout<'b>(
         &'b self,
@@ -553,6 +558,11 @@ pub struct MultiSpill<'a, 'b> {
 }
 
 impl MultiSpill<'_, '_> {
+    /// Identifies the spilled child, see [`MultiChild::id`].
+    pub fn id(&self) -> usize {
+        self.multi.id()
+    }
+
     /// Build the spill's frames given regions.
     pub fn layout(
         mut self,
