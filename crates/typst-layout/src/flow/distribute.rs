@@ -621,6 +621,8 @@ impl<'a, 'b> Distributor<'a, 'b, '_, '_, '_> {
             }
         }
 
+        self.composer.flow_used = used.y;
+
         // When we have fractional spacing, occupy the remaining space with it.
         let mut fr_space = Abs::zero();
         if frs.get() > 0.0 && region.size.y.is_finite() {

@@ -55,6 +55,8 @@ pub fn compose(
         uncuttable: vec![],
         balance: None,
         pending: 0,
+        flow_used: Abs::zero(),
+        used: Abs::zero(),
     }
     .page(locator, regions)
 }
@@ -104,7 +106,17 @@ pub struct Composer<'a, 'b, 'x, 'y> {
     /// over the columns. Used to reject balanced layouts that displace
     /// insertions more than the unbalanced layout.
     pending: usize,
+    /// The height used by in-flow content in the last distributed column,
+    /// set by the distributor.
+    pub flow_used: Abs,
+    /// The height used by in-flow content and column insertions, summed
+    /// over the region's columns. Gives a lower bound for balancing.
+    used: Abs,
 }
+
+/// How many column heights balancing tries upwards from its lower bound
+/// before it falls back to bisection.
+const SCAN_TRIALS: usize = 16;
 
 /// How a footnote's entry is processed.
 #[derive(Debug, Copy, Clone)]
@@ -140,6 +152,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
 
             self.balance = None;
             self.pending = 0;
+            self.used = Abs::zero();
             match self.page_contents(locator.relayout(), pod, None) {
                 Ok(frame) => break (frame, pod),
                 Err(Stop::Finish(_)) => unreachable!(),
@@ -171,8 +184,9 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
     /// columns, with the same insertions as in the unbalanced layout. Page
     /// insertions (parent-scoped floats) stay as they are.
     ///
-    /// Heights are multiples of `snap` if given. If no height shorter than
-    /// the full column height fits, the unbalanced layout is kept.
+    /// Heights are multiples of `snap` if given, otherwise of 1pt. If no
+    /// height shorter than the full column height fits, the unbalanced layout
+    /// is kept.
     fn balance(
         &mut self,
         locator: Locator,
@@ -194,39 +208,59 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
 
         // Candidate heights are `step * k` for `k` in `1..=max`; `max + 1`
         // stands for the unbalanced layout, which is known to fit.
-        let (step, max) = match snap {
-            Some(snap) => {
-                let max = (full / snap + 1e-6).floor() as usize;
-                let max = if (snap * max as f64).approx_eq(full) {
-                    max.saturating_sub(1)
-                } else {
-                    max
-                };
-                (snap, max)
-            }
-            None => {
-                let step = Abs::pt(0.25);
-                (step, ((full / step).ceil() as usize).saturating_sub(1))
-            }
-        };
+        let step = snap.unwrap_or(Abs::pt(1.0));
+        let max = (full / step + 1e-6).floor() as usize;
+        let max =
+            if (step * max as f64).approx_eq(full) { max.saturating_sub(1) } else { max };
 
-        let (mut lo, mut hi) = (0, max + 1);
+        // Whether content fits is not monotonic in the height: e.g. a
+        // footnote entry that doesn't fit at all lets its marker's line move
+        // to the next column, while a slightly taller column would split the
+        // entry. So instead of bisecting right away, we scan upwards from a
+        // lower bound, the region's content shared evenly between the
+        // columns (minus a margin, as spacing collapses at column breaks).
+        let count = self.config.columns.count as f64;
+        let margin = ((Abs::pt(4.0) / step).ceil() as usize).max(2);
+        let start = ((self.used / count / step).floor() as usize)
+            .saturating_sub(margin)
+            .clamp(1, max + 1);
+        let end = (start + SCAN_TRIALS).min(max + 1);
+
         let mut best = None;
-        while hi - lo > 1 {
-            let mid = lo + (hi - lo) / 2;
-            match self.balance_trial(
+        for k in start..end {
+            let trial = self.balance_trial(
                 &locator,
                 pod,
                 checkpoint,
                 &initial,
-                step * mid as f64,
+                step * k as f64,
                 budget,
-            )? {
-                Some(result) => {
-                    hi = mid;
-                    best = Some(result);
+            )?;
+            if trial.is_some() {
+                best = trial;
+                break;
+            }
+        }
+
+        // If the scan didn't find a fitting height, bisect the rest.
+        if best.is_none() {
+            let (mut lo, mut hi) = (end.saturating_sub(1), max + 1);
+            while hi - lo > 1 {
+                let mid = lo + (hi - lo) / 2;
+                match self.balance_trial(
+                    &locator,
+                    pod,
+                    checkpoint,
+                    &initial,
+                    step * mid as f64,
+                    budget,
+                )? {
+                    Some(result) => {
+                        hi = mid;
+                        best = Some(result);
+                    }
+                    None => lo = mid,
                 }
-                None => lo = mid,
             }
         }
 
@@ -262,6 +296,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         self.footnote_queue = initial.1.clone();
         self.balance = None;
         self.pending = 0;
+        self.used = Abs::zero();
 
         let result = self.page_contents(locator.relayout(), pod, Some(height));
         let reached = self.balance.take().is_some();
@@ -434,6 +469,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         };
         drop(checkpoint);
 
+        self.used += self.flow_used + self.column_insertions.height();
         self.work.footnotes.extend(self.footnote_queue.drain(..));
         self.work.footnote_spill = std::mem::take(&mut self.footnote_spill);
 
