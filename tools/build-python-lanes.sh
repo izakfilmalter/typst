@@ -40,7 +40,12 @@ for crate in sorted((fork / "crates").iterdir()):
     name = tomllib.loads((crate / "Cargo.toml").read_text())["package"]["name"]
     if name in used:
         lines.append(f"{name} = {{ path = {json.dumps(str(crate))} }}")
-manifest.write_text(text + marker + "[patch.crates-io]\n" + "\n".join(lines) + "\n")
+# The default clone lives under the fork's target/, inside its Cargo
+# workspace; an empty [workspace] table keeps the binding standalone.
+workspace = "" if re.search(r"(?m)^\[workspace\]", text) else "[workspace]\n\n"
+manifest.write_text(
+    text + marker + workspace + "[patch.crates-io]\n" + "\n".join(lines) + "\n"
+)
 PY
 
 cd "$binding_dir"
