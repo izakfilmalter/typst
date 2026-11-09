@@ -502,14 +502,16 @@ pub fn commit(
         offset += p.config.hanging_indent;
     }
 
-    // Handle hanging punctuation to the left.
+    // Handle hanging punctuation to the left: in RTL text the line's start is its
+    // logical end (end-margin table); in LTR text opening punctuation hangs
+    // (optical margin alignment: “ ‘ ( [ at a line start).
     if let Some(text) = line.items.leading_text()
         && let Some(glyph) = text.glyphs.first()
-        && !text.dir.is_positive()
         && text.styles.get(TextElem::overhang)
         && (line.items.len() > 1 || text.glyphs.len() > 1)
     {
-        let amount = overhang(glyph.c) * glyph.x_advance.at(glyph.size);
+        let ratio = if text.dir.is_positive() { overhang_start(glyph.c) } else { overhang(glyph.c) };
+        let amount = ratio * glyph.x_advance.at(glyph.size);
         offset -= amount;
         remaining += amount;
     }
@@ -685,10 +687,24 @@ fn overhang(c: char) -> f64 {
         // Punctuation.
         '.' | ',' => 0.8,
         ':' | ';' => 0.3,
+        '!' | '?' => 0.2,
+
+        // Closing quotation marks.
+        '”' | '’' | '"' | '\'' | '»' | '›' => 0.6,
 
         // Arabic
         '\u{60C}' | '\u{6D4}' => 0.4,
 
+        _ => 0.0,
+    }
+}
+
+/// How much a character at the start of an LTR line should hang into the start
+/// margin (opening quotation marks and brackets).
+fn overhang_start(c: char) -> f64 {
+    match c {
+        '“' | '‘' | '„' | '"' | '\'' | '«' | '‹' => 0.6,
+        '(' | '[' => 0.15,
         _ => 0.0,
     }
 }
