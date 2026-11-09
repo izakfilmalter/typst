@@ -96,3 +96,37 @@ After the columns.
     assert.eq(entry.location().page(), entry.note.location().page())
   }
 }
+
+--- colbalance-offset paged ---
+// The snap steps start at an offset: the balanced height is 6pt plus a whole
+// number of 13pt steps, so a footnote set from the foot keeps a grid that
+// starts below a float.
+#set page(width: 200pt, height: 200pt, columns: 2)
+#set text(top-edge: 8pt, bottom-edge: -3pt)
+#set par(leading: 2pt, spacing: 2pt)
+#lorem(40)#footnote[A note at the foot.]
+#colbalance(snap: 13pt, offset: 6pt)
+
+#context {
+  let e = query(footnote.entry).first()
+  let n = query(footnote).first()
+  assert.eq(e.location().page(), n.location().page())
+}
+
+--- colbalance-level-notes paged ---
+// Level notes: both columns' separators stand at the same height, under the
+// deeper column's text; the column with fewer notes ends them higher.
+#set page(width: 220pt, height: 300pt, columns: 2)
+#set text(size: 8pt)
+#lorem(30)#footnote[A long note in the first column, which runs over several
+  lines, so that its column's notes are the deeper ones on the page.]
+#lorem(30)#footnote[Short.]
+#colbalance(level-notes: true)
+
+#context {
+  let es = query(footnote.entry)
+  assert.eq(es.len(), 2)
+  // the first lines of both entries stand level, under their separators
+  let (a, b) = es.map(e => e.location().position().y)
+  assert(calc.abs((a - b).pt()) < 0.01)
+}

@@ -93,7 +93,9 @@ impl<'a> Collector<'a, '_, '_> {
                 self.par_situation = ParSituation::First;
             } else if let Some(elem) = child.to_packed::<ColbalanceElem>() {
                 let snap = elem.snap.get(styles).map(|snap| snap.resolve(styles));
-                self.output.push(Child::Balance(snap));
+                let offset = elem.offset.get(styles).resolve(styles);
+                let level_notes = elem.level_notes.get(styles);
+                self.output.push(Child::Balance(BalanceSpec { snap, offset, level_notes }));
             } else if child.is::<PagebreakElem>() {
                 bail!(
                     child.span(), "pagebreaks are not allowed inside of containers";
@@ -367,9 +369,19 @@ pub enum Child<'a> {
     Flush,
     /// An explicit column break.
     Break(bool),
-    /// A column balance marker with an optional height step, see
-    /// [`ColbalanceElem`].
-    Balance(Option<Abs>),
+    /// A column balance marker, see [`ColbalanceElem`].
+    Balance(BalanceSpec),
+}
+
+/// How a column balance marker balances, see [`ColbalanceElem`].
+#[derive(Debug, Copy, Clone)]
+pub struct BalanceSpec {
+    /// The height step, if any.
+    pub snap: Option<Abs>,
+    /// Where the steps start.
+    pub offset: Abs,
+    /// Whether the columns' footnote areas start level.
+    pub level_notes: bool,
 }
 
 /// A child that encapsulates a layouted line of a paragraph.

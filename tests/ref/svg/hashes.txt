@@ -95,8 +95,10 @@ ad938013f7e83349fba1ea361db7f246 closure-without-params-non-atomic
 804e81ebe39613293e3d216bd0cf9999 colbalance-below-float
 5832eb2fb578bf2393483f3dcfd9b8fc colbalance-container
 a40510fdfc780d2cd832aafbd40de5f1 colbalance-footnotes
+f68ccc8a3f9c4e8e8c4ddc13c6099f01 colbalance-level-notes
 00aa559ec2a45ced28e785747929ee26 colbalance-long-note-moves
 1e713830266bf2e59e510e5d2d1bc32d colbalance-mid-page
+6b46cfcf13fb3609cdc51f2bc2c6eb1b colbalance-offset
 5f1d16d74ffd729b66012a28e0ba828d colbalance-single-column
 7c8f6c71eec6a047c22ca4d9b62b8b9a colbalance-snap
 f0d40cbf508d2a9257923b236bdae1a1 colbalance-text

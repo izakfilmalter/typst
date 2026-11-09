@@ -7,7 +7,7 @@ use typst_utils::Numeric;
 
 use super::compose::has_content;
 use super::{
-    Child, Composer, FlowResult, LineChild, MultiChild, MultiSpill, PlacedChild,
+    BalanceSpec, Child, Composer, FlowResult, LineChild, MultiChild, MultiSpill, PlacedChild,
     SingleChild, Stop, Work,
 };
 
@@ -140,7 +140,7 @@ impl<'a, 'b> Distributor<'a, 'b, '_, '_, '_> {
             Child::Placed(placed) => self.placed(placed)?,
             Child::Flush => self.flush()?,
             Child::Break(weak) => self.break_(*weak)?,
-            Child::Balance(snap) => self.balance(*snap)?,
+            Child::Balance(spec) => self.balance(*spec)?,
         }
         Ok(())
     }
@@ -552,7 +552,7 @@ impl<'a, 'b> Distributor<'a, 'b, '_, '_, '_> {
     ///
     /// The marker has no effect with a single column or if nothing has been
     /// placed in the region yet.
-    fn balance(&mut self, snap: Option<Abs>) -> FlowResult<()> {
+    fn balance(&mut self, spec: BalanceSpec) -> FlowResult<()> {
         if self.composer.config.columns.count == 1
             || (self.composer.column == 0
                 && !self.items.iter().any(|item| matches!(item, Item::Frame(..))))
@@ -571,7 +571,7 @@ impl<'a, 'b> Distributor<'a, 'b, '_, '_, '_> {
             self.composer.work.advance();
         }
 
-        self.composer.balance = Some(snap);
+        self.composer.balance = Some(spec);
         Err(Stop::Finish(true))
     }
 

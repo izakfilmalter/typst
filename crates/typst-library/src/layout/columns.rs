@@ -147,4 +147,19 @@ pub struct ColbalanceElem {
     /// #colbalance(snap: 1.65em)
     /// ```
     pub snap: Option<Length>,
+
+    /// Where the `snap` steps start: the balanced height is `offset` plus a
+    /// whole multiple of `snap`. Useful when the columns start below a
+    /// parent-scoped float, but their content should still keep a grid that
+    /// is registered on the page.
+    #[default(Length::zero())]
+    pub offset: Length,
+
+    /// If `{true}`, the footnote areas of the balanced columns start level:
+    /// each column's separator stands where the column with the deepest
+    /// notes has it, so a column with fewer notes ends them higher instead of
+    /// at the foot of the balanced height. A height only fits if every
+    /// column's content ends above that common level.
+    #[default(false)]
+    pub level_notes: bool,
 }

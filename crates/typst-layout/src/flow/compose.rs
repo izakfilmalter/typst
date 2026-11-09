@@ -21,7 +21,7 @@ use typst_syntax::Span;
 use typst_utils::{NonZeroExt, Numeric};
 
 use super::{
-    Config, FlowMode, FlowResult, FootnoteSpill, LaneWidth, LineNumberConfig,
+    BalanceSpec, Config, FlowMode, FlowResult, FootnoteSpill, LaneWidth, LineNumberConfig,
     PlacedChild, Stop, Work, distribute,
 };
 
@@ -59,6 +59,8 @@ pub fn compose(
         pending: 0,
         flow_used: Abs::zero(),
         used: Abs::zero(),
+        extents: vec![],
+        reserves: vec![],
     }
     .page(locator, regions)
 }
@@ -102,7 +104,7 @@ pub struct Composer<'a, 'b, 'x, 'y> {
     /// Set by the distributor when it reaches a column balance marker, with
     /// the marker's height step. The columns after the marker's column stay
     /// empty, and [`Self::page`] then balances the columns.
-    pub balance: Option<Option<Abs>>,
+    pub balance: Option<BalanceSpec>,
     /// The number of insertions (queued floats and footnotes, split footnote
     /// entries) that were pending at the ends of the region's columns, summed
     /// over the columns. Used to reject balanced layouts that displace
@@ -114,6 +116,14 @@ pub struct Composer<'a, 'b, 'x, 'y> {
     /// The height used by in-flow content and column insertions, summed
     /// over the region's columns. Gives a lower bound for balancing.
     used: Abs,
+    /// Per column of the region laid out last: where its in-flow content
+    /// ends (below its top insertions) and the height of its bottom
+    /// insertions (floats, footnote separator and entries).
+    extents: Vec<(Abs, Abs)>,
+    /// In a balanced layout with level notes: space reserved at the foot of
+    /// each column (by index) below its bottom insertions, so that they start
+    /// where the deepest column's do.
+    reserves: Vec<Abs>,
 }
 
 /// How many column heights balancing tries upwards from its lower bound
@@ -170,8 +180,8 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
 
         // Balance the columns if the region ended at a balance marker.
         let output = match self.balance.take() {
-            Some(snap) if self.config.columns.count > 1 => {
-                self.balance(locator, pod, &checkpoint, initial, output, snap)?
+            Some(spec) if self.config.columns.count > 1 => {
+                self.balance(locator, pod, &checkpoint, initial, output, spec)?
             }
             _ => output,
         };
@@ -196,10 +206,10 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         checkpoint: &Work<'a, 'b>,
         initial: (Vec<FootnoteSpill>, Vec<Packed<FootnoteElem>>),
         normal: Frame,
-        snap: Option<Abs>,
+        spec: BalanceSpec,
     ) -> SourceResult<Frame> {
         let full = pod.size.y;
-        let snap = snap.filter(|snap| *snap > Abs::zero());
+        let snap = spec.snap.filter(|snap| *snap > Abs::zero());
         if !full.is_finite() || full <= Abs::zero() {
             return Ok(normal);
         }
@@ -208,12 +218,18 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         let normal_work = self.work.clone();
         let page_insertions = self.page_insertions.clone();
 
-        // Candidate heights are `step * k` for `k` in `1..=max`; `max + 1`
-        // stands for the unbalanced layout, which is known to fit.
+        // Candidate heights are `offset + step * k` for `k` in `1..=max`;
+        // `max + 1` stands for the unbalanced layout, which is known to fit.
         let step = snap.unwrap_or(Abs::pt(1.0));
-        let max = (full / step + 1e-6).floor() as usize;
-        let max =
-            if (step * max as f64).approx_eq(full) { max.saturating_sub(1) } else { max };
+        let offset = if snap.is_some() {
+            let k = (spec.offset / step).floor();
+            spec.offset - step * k
+        } else {
+            Abs::zero()
+        };
+        let height = |k: usize| offset + step * k as f64;
+        let max = ((full - offset) / step + 1e-6).floor() as usize;
+        let max = if height(max).approx_eq(full) { max.saturating_sub(1) } else { max };
 
         // Whether content fits is not monotonic in the height: e.g. a
         // footnote entry that doesn't fit at all lets its marker's line move
@@ -223,7 +239,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         // columns (minus a margin, as spacing collapses at column breaks).
         let count = self.config.columns.count as f64;
         let margin = ((Abs::pt(4.0) / step).ceil() as usize).max(2);
-        let start = ((self.used / count / step).floor() as usize)
+        let start = (((self.used / count - offset) / step).floor().max(0.0) as usize)
             .saturating_sub(margin)
             .clamp(1, max + 1);
         let end = (start + SCAN_TRIALS).min(max + 1);
@@ -235,8 +251,9 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
                 pod,
                 checkpoint,
                 &initial,
-                step * k as f64,
+                height(k),
                 budget,
+                spec.level_notes,
             )?;
             if trial.is_some() {
                 best = trial;
@@ -254,8 +271,9 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
                     pod,
                     checkpoint,
                     &initial,
-                    step * mid as f64,
+                    height(mid),
                     budget,
+                    spec.level_notes,
                 )? {
                     Some(result) => {
                         hi = mid;
@@ -291,16 +309,52 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         initial: &(Vec<FootnoteSpill>, Vec<Packed<FootnoteElem>>),
         height: Abs,
         budget: usize,
+        level_notes: bool,
     ) -> SourceResult<Option<(Frame, Work<'a, 'b>)>> {
         let page_insertions = self.page_insertions.clone();
-        *self.work = checkpoint.clone();
-        self.footnote_spill = initial.0.clone();
-        self.footnote_queue = initial.1.clone();
-        self.balance = None;
-        self.pending = 0;
-        self.used = Abs::zero();
+        // Level notes: each column with notes keeps free, below them, the
+        // difference to the deepest column's notes, so that every column's
+        // notes start at the same height and its flow ends above it. Laying
+        // out with those reserves can move content between columns, so repeat
+        // until they are stable (or give up on this height).
+        let mut reserves: Vec<Abs> = vec![];
+        let mut rounds = 0;
+        let result = loop {
+            *self.work = checkpoint.clone();
+            self.footnote_spill = initial.0.clone();
+            self.footnote_queue = initial.1.clone();
+            self.balance = None;
+            self.pending = 0;
+            self.used = Abs::zero();
+            self.reserves = reserves.clone();
 
-        let result = self.page_contents(locator.relayout(), pod, Some(height));
+            let result = self.page_contents(locator.relayout(), pod, Some(height));
+            self.reserves.clear();
+            if !level_notes || result.is_err() {
+                break result;
+            }
+            let deepest = self.extents.iter().map(|e| e.1).fold(Abs::zero(), Abs::max);
+            let want: Vec<Abs> = self
+                .extents
+                .iter()
+                .map(|e| if e.1 > Abs::zero() { deepest - e.1 } else { Abs::zero() })
+                .collect();
+            let same = want.len() == reserves.len()
+                && want.iter().zip(&reserves).all(|(a, b)| a.approx_eq(*b))
+                || (reserves.is_empty() && want.iter().all(|w| w.approx_empty()));
+            if same {
+                break result;
+            }
+            rounds += 1;
+            if rounds > 4 {
+                self.balance = None;
+                self.page_insertions = page_insertions;
+                self.footnote_spill.clear();
+                self.footnote_queue.clear();
+                return Ok(None);
+            }
+            reserves = want;
+        };
         let reached = self.balance.take().is_some();
         let fits = reached && self.pending <= budget;
         self.page_insertions = page_insertions;
@@ -332,6 +386,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         }
 
         // Create a backlog for multi-column layout.
+        self.extents.clear();
         let count = self.config.columns.count;
         let column_height = regions.size.y;
         let first = balance.unwrap_or(column_height);
@@ -438,6 +493,8 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
             // insertions.
             let mut pod = regions;
             pod.size.y -= self.column_insertions.height();
+            // (level notes in a balanced region: the column's reserve at its foot)
+            pod.size.y -= self.reserves.get(self.column).copied().unwrap_or_default();
 
             self.balance = None;
             match self.column_contents(pod) {
@@ -476,6 +533,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         self.work.footnote_spill = std::mem::take(&mut self.footnote_spill);
 
         let insertions = std::mem::take(&mut self.column_insertions);
+        self.extents.push((insertions.top_size + self.flow_used, insertions.bottom_size));
         let mut output = insertions.finalize(self.work, self.config, inner);
 
         // Lay out per-column line numbers.
