@@ -62,6 +62,8 @@ pub fn compose(
         extents: vec![],
         reserves: vec![],
         notes_foot: None,
+        flow_cap: None,
+        flow_sum: Abs::zero(),
     }
     .page(locator, regions)
 }
@@ -128,6 +130,12 @@ pub struct Composer<'a, 'b, 'x, 'y> {
     /// In a balanced layout with `notes: "foot"`: the height each column's
     /// frame takes, its footnote area at the foot of it (the full region).
     notes_foot: Option<Abs>,
+    /// In a balanced trial with `notes: "foot"`: the height the flow (the text)
+    /// may take in each column, its footnotes below it down to the foot.
+    flow_cap: Option<Abs>,
+    /// The height used by in-flow content alone, summed over the region's
+    /// columns (a lower bound for text-only balancing).
+    flow_sum: Abs,
 }
 
 /// How many column heights balancing tries upwards from its lower bound
@@ -169,6 +177,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
             self.balance = None;
             self.pending = 0;
             self.used = Abs::zero();
+            self.flow_sum = Abs::zero();
             match self.page_contents(locator.relayout(), pod, None) {
                 Ok(frame) => break (frame, pod),
                 Err(Stop::Finish(_)) => unreachable!(),
@@ -243,7 +252,9 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         // columns (minus a margin, as spacing collapses at column breaks).
         let count = self.config.columns.count as f64;
         let margin = ((Abs::pt(4.0) / step).ceil() as usize).max(2);
-        let start = (((self.used / count - offset) / step).floor().max(0.0) as usize)
+        // (notes at the foot: only the text is balanced, so its share is the lower bound)
+        let used = if spec.notes_foot { self.flow_sum } else { self.used };
+        let start = (((used / count - offset) / step).floor().max(0.0) as usize)
             .saturating_sub(margin)
             .clamp(1, max + 1);
         let end = (start + SCAN_TRIALS).min(max + 1);
@@ -332,6 +343,36 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         foot: Option<Abs>,
     ) -> SourceResult<Option<(Frame, Work<'a, 'b>)>> {
         let page_insertions = self.page_insertions.clone();
+        // Notes at the foot: the text of every column takes at most `height`,
+        // and its footnotes stand below it at the foot of the full region (the
+        // column frames as tall as the region), so only the text is balanced.
+        if let Some(full) = foot {
+            *self.work = checkpoint.clone();
+            self.footnote_spill = initial.0.clone();
+            self.footnote_queue = initial.1.clone();
+            self.balance = None;
+            self.pending = 0;
+            self.used = Abs::zero();
+            self.flow_sum = Abs::zero();
+            self.reserves.clear();
+            self.flow_cap = Some(height);
+            self.notes_foot = Some(full);
+            let result = self.page_contents(locator.relayout(), pod, Some(full));
+            self.flow_cap = None;
+            self.notes_foot = None;
+            let reached = self.balance.take().is_some();
+            let fits = reached && self.pending <= budget;
+            self.page_insertions = page_insertions;
+            return match result {
+                Ok(frame) if fits => Ok(Some((frame, self.work.clone()))),
+                Ok(_) | Err(Stop::Relayout(_) | Stop::Finish(_) | Stop::Cut(..)) => {
+                    self.footnote_spill.clear();
+                    self.footnote_queue.clear();
+                    Ok(None)
+                }
+                Err(Stop::Error(err)) => Err(err),
+            };
+        }
         // Level notes: each column with notes keeps free, below them, the
         // difference to the deepest column's notes, so that every column's
         // notes start at the same height and its flow ends above it. Laying
@@ -385,43 +426,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         // smallest gap), so their separators stay level. The flow keeps its
         // breaks: each column still has room for what it holds.
         let mut result = result;
-        // Notes at the foot: the text keeps the balanced breaks, and every
-        // column's footnote area moves to the foot of the full region (the
-        // columns laid out again with the same breaks, their frames as tall
-        // as the region).
-        if let Some(foot) = foot.filter(|_| fits && result.is_ok()) {
-            let flows: Vec<Abs> = self.extents.iter().map(|e| e.0).collect();
-            let work = self.work.clone();
-            let spill = self.footnote_spill.clone();
-            let queue = self.footnote_queue.clone();
-            let frame = result.as_ref().ok().cloned();
-            *self.work = checkpoint.clone();
-            self.footnote_spill = initial.0.clone();
-            self.footnote_queue = initial.1.clone();
-            self.balance = None;
-            self.pending = 0;
-            self.used = Abs::zero();
-            self.reserves = reserves.clone();
-            self.notes_foot = Some(foot);
-            let at_foot = self.page_contents(locator.relayout(), pod, Some(height));
-            self.notes_foot = None;
-            self.reserves.clear();
-            let again = self.balance.take().is_some() && self.pending <= budget;
-            let same = self.extents.len() == flows.len()
-                && self.extents.iter().zip(&flows).all(|(e, f)| e.0.approx_eq(*f));
-            match at_foot {
-                Ok(frame) if again && same => result = Ok(frame),
-                Err(Stop::Error(err)) => return Err(err),
-                _ => {
-                    *self.work = work;
-                    self.footnote_spill = spill;
-                    self.footnote_queue = queue;
-                    if let Some(frame) = frame {
-                        result = Ok(frame);
-                    }
-                }
-            }
-        } else if fits && result.is_ok() && step > Abs::zero() {
+        if fits && result.is_ok() && step > Abs::zero() {
             let gaps: Vec<Option<Abs>> = self
                 .extents
                 .iter()
@@ -619,6 +624,10 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
             pod.size.y -= self.column_insertions.height();
             // (level notes in a balanced region: the column's reserve at its foot)
             pod.size.y -= self.reserves.get(self.column).copied().unwrap_or_default();
+            // (notes at the foot: the text takes at most the balanced height)
+            if let Some(cap) = self.flow_cap {
+                pod.size.y.set_min(cap);
+            }
 
             self.balance = None;
             match self.column_contents(pod) {
@@ -653,6 +662,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         drop(checkpoint);
 
         self.used += self.flow_used + self.column_insertions.height();
+        self.flow_sum += self.flow_used;
         self.work.footnotes.extend(self.footnote_queue.drain(..));
         self.work.footnote_spill = std::mem::take(&mut self.footnote_spill);
 
