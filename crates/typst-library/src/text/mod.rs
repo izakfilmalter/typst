@@ -575,6 +575,14 @@ pub struct TextElem {
     /// - `runt`: ending a paragraph with a line with a single word
     /// - `widow`: leaving a single line of paragraph on the next page
     /// - `orphan`: leaving single line of paragraph on the previous page
+    /// - `overstretch`: stretching a line past the paragraph's
+    ///   @par.justification-limits[justification limits]: the stretch beyond
+    ///   the limits counts this many times (`{100%}`, the default, costs it
+    ///   like any other stretch; `{1000%}` makes the line breaker hyphenate or
+    ///   tighten neighbouring lines rather than open one past its limits)
+    /// - `contrast`: setting neighbouring lines of a paragraph shape (the lines
+    ///   beside a drop, @par.hang) with word gaps of very different widths
+    ///   (`{0%}`, the default, does not cost it)
     ///
     /// Hyphenation is generally avoided by placing the whole word on the next
     /// line, so a higher hyphenation cost can result in awkward justification
@@ -1509,6 +1517,8 @@ pub struct Costs {
     runt: Option<Ratio>,
     widow: Option<Ratio>,
     orphan: Option<Ratio>,
+    overstretch: Option<Ratio>,
+    contrast: Option<Ratio>,
 }
 
 impl Costs {
@@ -1531,6 +1541,16 @@ impl Costs {
     pub fn orphan(&self) -> Ratio {
         self.orphan.unwrap_or(Ratio::one())
     }
+
+    #[must_use]
+    pub fn overstretch(&self) -> Ratio {
+        self.overstretch.unwrap_or(Ratio::one())
+    }
+
+    #[must_use]
+    pub fn contrast(&self) -> Ratio {
+        self.contrast.unwrap_or(Ratio::zero())
+    }
 }
 
 impl Fold for Costs {
@@ -1541,6 +1561,8 @@ impl Fold for Costs {
             runt: self.runt.or(outer.runt),
             widow: self.widow.or(outer.widow),
             orphan: self.orphan.or(outer.orphan),
+            overstretch: self.overstretch.or(outer.overstretch),
+            contrast: self.contrast.or(outer.contrast),
         }
     }
 }
@@ -1552,6 +1574,8 @@ cast! {
         "runt" => self.runt(),
         "widow" => self.widow(),
         "orphan" => self.orphan(),
+        "overstretch" => self.overstretch(),
+        "contrast" => self.contrast(),
     ].into_value(),
     mut v: Dict => {
         let ret = Self {
@@ -1559,8 +1583,10 @@ cast! {
             runt: v.take("runt").ok().map(|v| v.cast()).transpose()?,
             widow: v.take("widow").ok().map(|v| v.cast()).transpose()?,
             orphan: v.take("orphan").ok().map(|v| v.cast()).transpose()?,
+            overstretch: v.take("overstretch").ok().map(|v| v.cast()).transpose()?,
+            contrast: v.take("contrast").ok().map(|v| v.cast()).transpose()?,
         };
-        v.finish(&["hyphenation", "runt", "widow", "orphan"])?;
+        v.finish(&["hyphenation", "runt", "widow", "orphan", "overstretch", "contrast"])?;
         ret
     },
 }

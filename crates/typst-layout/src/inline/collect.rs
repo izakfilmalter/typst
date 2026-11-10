@@ -18,6 +18,8 @@ use crate::modifiers::{FrameModifiers, FrameModify, layout_and_modify};
 // The characters by which spacing, inline content and pins are replaced in the
 // full text.
 const SPACING_REPLACE: &str = " "; // Space
+// Negative spacing is a kern, not a gap: no line break opportunity on either side.
+const KERN_REPLACE: &str = "\u{2060}"; // Word Joiner
 const OBJ_REPLACE: &str = "\u{FFFC}"; // Object Replacement Character
 
 // Unicode BiDi control characters.
@@ -72,6 +74,7 @@ impl<'a> Item<'a> {
     pub fn textual(&self) -> &str {
         match self {
             Self::Text(shaped) => shaped.text,
+            Self::Absolute(v, _) if *v < Abs::zero() => KERN_REPLACE,
             Self::Absolute(_, _) | Self::Fractional(_, _) => SPACING_REPLACE,
             Self::Frame(_) => OBJ_REPLACE,
             Self::Tag(_) => "",

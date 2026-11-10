@@ -17,6 +17,9 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use super::*;
 
+/// A soft hyphen: a hyphenation opportunity given in the text.
+const SOFT_HYPHEN: char = '\u{ad}';
+
 /// The cost of a line or inline layout.
 type Cost = f64;
 
@@ -117,8 +120,15 @@ impl Breakpoint {
                 Trim::uniform(start + trimmed.len())
             }
 
-            // Trim nothing.
-            Self::Hyphen(..) => Trim::uniform(start + line.len()),
+            // Trim nothing, save a soft hyphen the break follows (its hyphen
+            // is added as for any hyphenation).
+            Self::Hyphen(..) => match line.strip_suffix(SOFT_HYPHEN) {
+                Some(trimmed) => Trim {
+                    layout: start + trimmed.len(),
+                    shaping: start + line.len(),
+                },
+                None => Trim::uniform(start + line.len()),
+            },
         }
     }
 
@@ -169,9 +179,11 @@ fn linebreak_simple<'a>(
     p: &'a Preparation<'a>,
     width: Abs,
 ) -> Vec<Line<'a>> {
-    let mut lines = Vec::with_capacity(16);
+    let mut lines: Vec<Line<'a>> = Vec::with_capacity(16);
     let mut start = 0;
     let mut last = None;
+    // (the paragraph shape: the measure of line `n`)
+    let width_at = |n: usize| width - p.config.hang_at(n);
 
     breakpoints(p, |end, breakpoint| {
         // Compute the line and its size.
@@ -180,7 +192,7 @@ fn linebreak_simple<'a>(
         // If the line doesn't fit anymore, we push the last fitting attempt
         // into the stack and rebuild the line from the attempt's end. The
         // resulting line cannot be broken up further.
-        if !width.fits(attempt.width)
+        if !width_at(lines.len()).fits(attempt.width)
             && let Some((last_attempt, last_end)) = last.take()
         {
             lines.push(last_attempt);
@@ -191,7 +203,7 @@ fn linebreak_simple<'a>(
         // Finish the current line if there is a mandatory line break (i.e. due
         // to "\n") or if the line doesn't fit horizontally already since then
         // no shorter line will be possible.
-        if breakpoint == Breakpoint::Mandatory || !width.fits(attempt.width) {
+        if breakpoint == Breakpoint::Mandatory || !width_at(lines.len()).fits(attempt.width) {
             lines.push(attempt);
             start = end;
             last = None;
@@ -256,20 +268,39 @@ fn linebreak_optimized_bounded<'a>(
         total: Cost,
         line: Line<'a>,
         end: usize,
+        /// Lines up to and including this one, capped at the paragraph shape's
+        /// indented lines (always 0 without a shape): the shape's lines have their
+        /// own measure, so the best layout up to a breakpoint is kept per class.
+        class: usize,
+        /// The spacing class of this line (see `fitness`), kept apart only where
+        /// the next line is a shape line costed against it (`costs.contrast`).
+        fit: i8,
     }
 
+    let shape = p.config.hang.0;
+    let slots = (shape + 1) * FITNESS_SLOTS;
+
     // Dynamic programming table.
-    let mut table = vec![Entry { pred: 0, total: 0.0, line: Line::empty(), end: 0 }];
+    let mut table = vec![Entry {
+        pred: 0,
+        total: 0.0,
+        line: Line::empty(),
+        end: 0,
+        class: 0,
+        fit: 0,
+    }];
 
     let mut active = 0;
     let mut prev_end = 0;
+    let mut last_start = 0;
 
     breakpoints(p, |end, breakpoint| {
-        // Find the optimal predecessor.
-        let mut best: Option<Entry> = None;
+        // Find the optimal predecessor (per class).
+        let mut best: Vec<Option<Entry>> = (0..slots).map(|_| None).collect();
 
-        // A lower bound for the cost of all following line attempts.
-        let mut line_lower_bound = None;
+        // A lower bound for the cost of all following line attempts (per class
+        // of the predecessor: the measure depends on it).
+        let mut line_lower_bound: Vec<Option<Cost>> = vec![None; shape + 1];
 
         for (pred_index, pred) in table.iter().enumerate().skip(active) {
             let start = pred.end;
@@ -277,7 +308,7 @@ fn linebreak_optimized_bounded<'a>(
 
             // If the minimum cost we've established for the line is already
             // too much, skip this attempt.
-            if line_lower_bound
+            if line_lower_bound[pred.class]
                 .is_some_and(|lower| pred.total + lower > upper_bound + BOUND_EPS)
             {
                 continue;
@@ -290,7 +321,7 @@ fn linebreak_optimized_bounded<'a>(
             let (line_ratio, line_cost) = ratio_and_cost(
                 p,
                 metrics,
-                width,
+                width - p.config.hang_at(pred.class),
                 &pred.line,
                 &attempt,
                 breakpoint,
@@ -311,8 +342,12 @@ fn linebreak_optimized_bounded<'a>(
                 active += 1;
             }
 
+            // Spacing contrast with the line above, between the shape's lines.
+            let fit = fitness(metrics, line_ratio);
+            let contrast = contrast_cost(metrics, shape, pred.class, pred.fit, line_ratio);
+
             // The total cost of this line and its chain of predecessors.
-            let total = pred.total + line_cost;
+            let total = pred.total + line_cost + contrast;
 
             // If the line is already underfull (`line_ratio > 0`), any shorter
             // slice of the line will be even more underfull. So it'll only get
@@ -321,10 +356,10 @@ fn linebreak_optimized_bounded<'a>(
             // negative spacing, we can't know for sure, so we don't assign the
             // lower bound in that case.
             if line_ratio > 0.0
-                && line_lower_bound.is_none()
+                && line_lower_bound[pred.class].is_none()
                 && !attempt.has_negative_width_items()
             {
-                line_lower_bound = Some(line_cost);
+                line_lower_bound[pred.class] = Some(line_cost);
             }
 
             // If the cost already exceeds the upper bound, we don't need to
@@ -334,8 +369,17 @@ fn linebreak_optimized_bounded<'a>(
             }
 
             // If this attempt is better than what we had before, take it!
-            if best.as_ref().is_none_or(|best| best.total >= total) {
-                best = Some(Entry { pred: pred_index, total, line: attempt, end });
+            let class = (pred.class + 1).min(shape);
+            let slot = fitness_slot(metrics, shape, class, fit);
+            if best[slot].as_ref().is_none_or(|best| best.total >= total) {
+                best[slot] = Some(Entry {
+                    pred: pred_index,
+                    total,
+                    line: attempt,
+                    end,
+                    class,
+                    fit,
+                });
             }
         }
 
@@ -345,13 +389,16 @@ fn linebreak_optimized_bounded<'a>(
             active = table.len();
         }
 
-        table.extend(best);
+        last_start = table.len();
+        table.extend(best.into_iter().flatten());
         prev_end = end;
     });
 
-    // Retrace the best path.
+    // Retrace the best path (from the cheapest entry at the last breakpoint).
     let mut lines = Vec::with_capacity(16);
-    let mut idx = table.len() - 1;
+    let mut idx = (last_start..table.len())
+        .min_by(|&a, &b| table[a].total.total_cmp(&table[b].total))
+        .unwrap_or(table.len() - 1);
 
     // This should only happen if our bound was faulty. Which shouldn't happen!
     if table[idx].end != p.text.len() {
@@ -397,7 +444,11 @@ fn linebreak_optimized_approximate(
         end: usize,
         unbreakable: bool,
         breakpoint: Breakpoint,
+        /// As in `linebreak_optimized_bounded`.
+        class: usize,
     }
+
+    let shape = p.config.hang.0;
 
     // Dynamic programming table.
     let mut table = vec![Entry {
@@ -406,14 +457,16 @@ fn linebreak_optimized_approximate(
         end: 0,
         unbreakable: false,
         breakpoint: Breakpoint::Mandatory,
+        class: 0,
     }];
 
     let mut active = 0;
     let mut prev_end = 0;
+    let mut last_start = 0;
 
     breakpoints(p, |end, breakpoint| {
-        // Find the optimal predecessor.
-        let mut best: Option<Entry> = None;
+        // Find the optimal predecessor (per class).
+        let mut best: Vec<Option<Entry>> = (0..=shape).map(|_| None).collect();
         for (pred_index, pred) in table.iter().enumerate().skip(active) {
             let start = pred.end;
             let unbreakable = prev_end == start;
@@ -434,7 +487,7 @@ fn linebreak_optimized_approximate(
             let trimmed_end = start + p.text[start..end].trim_end().len();
             let line_ratio = raw_ratio(
                 p,
-                width,
+                width - p.config.hang_at(pred.class),
                 estimates.widths.estimate(start..trimmed_end)
                     + if breakpoint.is_hyphen() {
                         metrics.approx_hyphen_width
@@ -467,13 +520,15 @@ fn linebreak_optimized_approximate(
             let total = pred.total + line_cost;
 
             // If this attempt is better than what we had before, take it!
-            if best.as_ref().is_none_or(|best| best.total >= total) {
-                best = Some(Entry {
+            let class = (pred.class + 1).min(shape);
+            if best[class].as_ref().is_none_or(|best| best.total >= total) {
+                best[class] = Some(Entry {
                     pred: pred_index,
                     total,
                     end,
                     unbreakable,
                     breakpoint,
+                    class,
                 });
             }
         }
@@ -484,13 +539,16 @@ fn linebreak_optimized_approximate(
             active = table.len();
         }
 
-        table.extend(best);
+        last_start = table.len();
+        table.extend(best.into_iter().flatten());
         prev_end = end;
     });
 
-    // Retrace the best path.
+    // Retrace the best path (from the cheapest entry at the last breakpoint).
     let mut indices = Vec::with_capacity(16);
-    let mut idx = table.len() - 1;
+    let mut idx = (last_start..table.len())
+        .min_by(|&a, &b| table[a].total.total_cmp(&table[b].total))
+        .unwrap_or(table.len() - 1);
     while idx != 0 {
         indices.push(idx);
         idx = table[idx].pred;
@@ -504,12 +562,23 @@ fn linebreak_optimized_approximate(
     // got here is only likely to be good, not guaranteed to be the best. We now
     // computes its exact cost as that gives us a sound upper bound for the
     // proper optimization pass.
-    for idx in indices.into_iter().rev() {
+    let mut pred_fit = 0;
+    for (n, idx) in indices.into_iter().rev().enumerate() {
         let Entry { end, breakpoint, unbreakable, .. } = table[idx];
 
         let attempt = line(engine, p, start..end, breakpoint, Some(&pred));
-        let (ratio, line_cost) =
-            ratio_and_cost(p, metrics, width, &pred, &attempt, breakpoint, unbreakable);
+        let (ratio, line_cost) = ratio_and_cost(
+            p,
+            metrics,
+            width - p.config.hang_at(n),
+            &pred,
+            &attempt,
+            breakpoint,
+            unbreakable,
+        );
+        let line_cost = line_cost
+            + contrast_cost(metrics, p.config.hang.0, n.min(p.config.hang.0), pred_fit, ratio);
+        pred_fit = fitness(metrics, ratio);
 
         // If approximation produces a valid layout without too much shrinking,
         // exact layout is guaranteed to find the same layout. If, however, the
@@ -633,6 +702,15 @@ fn raw_cost(
     consecutive_dash: bool,
     approx: bool,
 ) -> Cost {
+    // Stretch past the justification limits (a ratio over 1) counts
+    // `overstretch` times (clamped as in `raw_ratio`, so a loose line never
+    // costs as much as an overfull one).
+    let ratio = if ratio > 1.0 {
+        (1.0 + metrics.overstretch * (ratio - 1.0)).min(10.0)
+    } else {
+        ratio
+    };
+
     // Determine the stretch/shrink cost of the line.
     let badness = if ratio < metrics.min_ratio(approx) {
         // Overfull line always has maximum cost.
@@ -679,6 +757,62 @@ fn raw_cost(
     // We add one to minimize the number of lines when everything else is more
     // or less equal.
     Scalar::new(1.0 + badness + penalty).powi(2).get()
+}
+
+/// Spacing classes kept apart per breakpoint (13: −6 … 6).
+const FITNESS_SLOTS: usize = 13;
+/// The cost of one step of spacing contrast at `costs.contrast` 100%.
+const CONTRAST_COST: Cost = 4000.0;
+/// One spacing class: the printed word gap 25% wider or narrower.
+const FITNESS_STEP: f64 = 0.223_143_551_314_209_7; // ln 1.25
+/// Contrast up to this is free: about 1.3×, the eye's tolerance.
+const CONTRAST_FREE: f64 = 0.262_364_264_467_491; // ln 1.3
+
+/// The word gap as printed relative to the natural space, as a line with the
+/// given stretch ratio sets it (on a log scale).
+fn gap_log(metrics: &CostMetrics, ratio: f64) -> f64 {
+    let g = if ratio >= 1.0 {
+        1.0 + metrics.gap_up + metrics.gap_extra * (ratio - 1.0)
+    } else if ratio >= 0.0 {
+        1.0 + metrics.gap_up * ratio
+    } else {
+        1.0 + metrics.gap_down * ratio.max(-1.0)
+    };
+    g.max(0.1).ln()
+}
+
+/// The spacing class of a line with the given stretch ratio.
+fn fitness(metrics: &CostMetrics, ratio: f64) -> i8 {
+    if metrics.contrast <= 0.0 {
+        return 0;
+    }
+    let half = (FITNESS_SLOTS / 2) as f64;
+    (gap_log(metrics, ratio) / FITNESS_STEP).round().clamp(-half, half) as i8
+}
+
+/// The table slot for an entry: spacing classes are kept apart only where the
+/// next line is a shape line costed against this one.
+fn fitness_slot(metrics: &CostMetrics, shape: usize, class: usize, fit: i8) -> usize {
+    let costed = metrics.contrast > 0.0 && class >= 1 && class < shape;
+    class * FITNESS_SLOTS
+        + if costed { (fit as isize + (FITNESS_SLOTS / 2) as isize) as usize } else { 0 }
+}
+
+/// The contrast cost of a line (index `index`, zero-based) with the given ratio
+/// against the line above of spacing class `pred_fit`: only between two lines of
+/// the paragraph shape (the lines beside a drop).
+fn contrast_cost(
+    metrics: &CostMetrics,
+    shape: usize,
+    index: usize,
+    pred_fit: i8,
+    ratio: f64,
+) -> Cost {
+    if metrics.contrast <= 0.0 || index == 0 || index >= shape {
+        return 0.0;
+    }
+    let d = (gap_log(metrics, ratio) - pred_fit as f64 * FITNESS_STEP).abs();
+    metrics.contrast * ((d - CONTRAST_FREE).max(0.0) / FITNESS_STEP)
 }
 
 /// Calls `f` for all possible points in the text where lines can broken.
@@ -761,6 +895,28 @@ fn breakpoints(p: &Preparation, mut f: impl FnMut(usize, Breakpoint)) {
                     continue;
                 }
 
+                // A soft hyphen is a hyphenation like any other: it costs as one
+                // and, as in CSS (`hyphens: none`), is no break where hyphenation
+                // is off.
+                _ if c == SOFT_HYPHEN => {
+                    if !hyphenate_at(p, point - c.len_utf8()) {
+                        continue;
+                    }
+                    let in_word = |ch: &char| ch.is_alphabetic() || *ch == SOFT_HYPHEN;
+                    let l = text[..point]
+                        .chars()
+                        .rev()
+                        .take_while(in_word)
+                        .filter(|&ch| ch != SOFT_HYPHEN)
+                        .count();
+                    let r = text[point..]
+                        .chars()
+                        .take_while(in_word)
+                        .filter(|&ch| ch != SOFT_HYPHEN)
+                        .count();
+                    Breakpoint::Hyphen(l.saturating_as(), r.saturating_as())
+                }
+
                 _ => Breakpoint::Normal,
             }
         };
@@ -768,8 +924,18 @@ fn breakpoints(p: &Preparation, mut f: impl FnMut(usize, Breakpoint)) {
         // Hyphenate between the last and current breakpoint.
         if hyphenate && last < point {
             for segment in text[last..point].split_word_bounds() {
-                if !segment.is_empty() && segment.chars().all(char::is_alphabetic) {
-                    hyphenations(p, last, segment, &mut f);
+                // A word's letters hyphenate even where something not a letter joins
+                // its segment at the end: a footnote marker's figure ("congregations⁹"),
+                // or anything after a kern (negative spacing, a word joiner in the text:
+                // a lettered marker, "congregationsᵇ", kerned to its word). A segment
+                // with letters after the first non-letter (a soft hyphen's word) does not.
+                let head = segment.split('\u{2060}').next().unwrap_or_default();
+                let n = head.find(|c: char| !c.is_alphabetic()).unwrap_or(head.len());
+                let (word, tail) = head.split_at(n);
+                if !word.is_empty()
+                    && tail.chars().all(|c| !c.is_alphabetic() && c != SOFT_HYPHEN)
+                {
+                    hyphenations(p, last, word, &mut f);
                 }
                 last += segment.len();
             }
@@ -915,11 +1081,37 @@ struct CostMetrics {
     approx_hyphen_width: Abs,
     hyph_cost: Cost,
     runt_cost: Cost,
+    /// How many times stretch past the justification limits counts.
+    overstretch: f64,
+    /// The cost of a step of spacing contrast between a paragraph shape's lines
+    /// (zero: not costed).
+    contrast: f64,
+    /// How the word gap as printed (space and the letterspacing either side of
+    /// it, relative to the natural space) grows per unit of positive and of
+    /// negative stretch ratio.
+    gap_up: f64,
+    gap_down: f64,
+    /// How it grows per unit of ratio past the justification limits.
+    gap_extra: f64,
 }
 
 impl CostMetrics {
     /// Compute shared metrics for inline layout optimization.
     fn compute(p: &Preparation) -> Self {
+        let size = p.config.font_size;
+        let limits = &p.config.justification_limits;
+        // the natural word space: the paragraph's first space, else a quarter em
+        let space = p
+            .items
+            .iter()
+            .find_map(|(_, item)| {
+                item.text().and_then(|t| {
+                    t.glyphs.iter().find(|g| g.c == ' ').map(|g| g.x_advance.at(g.size))
+                })
+            })
+            .filter(|w| *w > Abs::zero())
+            .unwrap_or(size / 4.0)
+            .to_raw();
         Self {
             // When justifying, we may stretch spaces below their natural width.
             min_ratio: if p.config.justify { MIN_RATIO } else { 0.0 },
@@ -929,6 +1121,15 @@ impl CostMetrics {
             // Costs.
             hyph_cost: DEFAULT_HYPH_COST * p.config.costs.hyphenation().get(),
             runt_cost: DEFAULT_RUNT_COST * p.config.costs.runt().get(),
+            overstretch: p.config.costs.overstretch().get().max(0.0),
+            contrast: CONTRAST_COST * p.config.costs.contrast().get().max(0.0),
+            gap_up: (limits.spacing().max.rel.get() - 1.0).max(0.0)
+                + 2.0 * limits.tracking().max.at(size).to_raw() / space,
+            gap_down: (1.0 - limits.spacing().min.rel.get()).max(0.0)
+                + 2.0 * (-limits.tracking().min.at(size).to_raw()).max(0.0) / space,
+            // (past the limits, Typst's ratio counts the excess per justifiable
+            // in half ems)
+            gap_extra: size.to_raw() / 2.0 / space,
         }
     }
 

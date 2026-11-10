@@ -625,6 +625,7 @@ dfc719cc366b8f708b70fae7ed9ef561 highlight-radius
 6994448cbbb53dfd491f58ff22135bf6 highlight-stroke
 93b1e8ed11dc2c78fb2f790447484763 html-frame-in-layout
 da12af82efd5656a117722aec072acc5 hyphenate
+1ed724e9a677fa234bbb22fdf46679c2 hyphenate-before-footnote
 945499ca668fd291db5c55a01dd048c1 hyphenate-between-shape-runs
 ff6c6a8eabbe2534895545b0009449d1 hyphenate-es-capitalized-names
 68d032dbc2ce96a82f9bc4925452cbbd hyphenate-es-repeat-hyphen
@@ -968,8 +969,10 @@ ec2290f56d9653acec9fc323446976ca linebreak-hyphen-nbsp
 04199e8f20591e3a5a7a4dee0023200e linebreak-manual-trailing-multiple
 646f887aec1bc3f7776707b6126024b6 linebreak-math-punctuation
 cf8f43d76050d8fdbd0e02328aab7e02 linebreak-narrow-nbsp
+79c1a4a2f420d6a7a5de810c1452662b linebreak-negative-spacing-kern
 6b52a8e1d92e9d3f366ef72e71f1218e linebreak-overflow
 11bbe621d5f754ac4b5b7d2bb86df40c linebreak-overflow-double
+5ddc753aa1ae40707847ffd5ba06ecd9 linebreak-overstretch
 f864acb65ada1eb1c4c113f1605e6721 linebreak-shape-run
 0b1f70a3bdaa7d1451b14b2a7b1cabf0 linebreak-thai
 faac753dfea62cce4dc6f1f21e049df7 linebreak-whitespace-trimming
@@ -1508,6 +1511,12 @@ e859a3fa9214fbcd8185b2fadd5b1909 par-first-line-indent-all
 e58d71d92a252c5cb2258fdab27ae396 par-first-line-indent-all-list
 7c1e339fd9c8f90b4de95d4c80980c86 par-first-line-indent-all-terms
 1bf6bdce044c39688bb3242ce832bb73 par-first-line-indent-columns
+384c7a1691b005ecc25a6cc73620ffec par-hang-all-lines
+3019780a2cfa8c9c908e42eb9f93f093 par-hang-basic
+0c07ed7c4199268a501c3d8a94f584d8 par-hang-contrast
+62b499456ded0ff8e9c7900b7a2a7aac par-hang-no-overhang
+32deacbe9353b0391e5ef30f6728f7fa par-hang-soft-hyphen
+7bdc808fb94820c9c9d6720104f7dd44 par-hang-zero
 243ed7c1db0d5953f7d24171b3386b24 par-hanging-indent
 1d4473fe2c5fb0c27ecadb9f1a168520 par-hanging-indent-manual-linebreak
 559ab61b46107840fa0affa7b963f7fd par-hanging-indent-rtl

@@ -20,7 +20,12 @@ pub fn finalize(
     {
         region.x.min(
             p.config.hanging_indent
-                + lines.iter().map(|line| line.width).max().unwrap_or_default(),
+                + lines
+                    .iter()
+                    .enumerate()
+                    .map(|(i, line)| line.width + p.config.hang_at(i))
+                    .max()
+                    .unwrap_or_default(),
         )
     } else {
         region.x
@@ -29,7 +34,10 @@ pub fn finalize(
     // Stack the lines into one frame per region.
     lines
         .iter()
-        .map(|line| commit(engine, p, line, width, region.y, locator))
+        .enumerate()
+        .map(|(i, line)| {
+            commit(engine, p, line, width, region.y, p.config.hang_at(i), locator)
+        })
         .collect::<SourceResult<_>>()
         .map(Fragment::frames)
 }

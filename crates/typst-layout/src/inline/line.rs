@@ -490,22 +490,25 @@ pub fn commit(
     line: &Line,
     width: Abs,
     full: Abs,
+    indent: Abs,
     locator: &mut SplitLocator<'_>,
 ) -> SourceResult<Frame> {
-    let mut remaining = width - line.width - p.config.hanging_indent;
+    let mut remaining = width - line.width - p.config.hanging_indent - indent;
     let mut offset = Abs::zero();
 
     // We always build the line from left to right. In an LTR paragraph, we must
     // thus add the hanging indent to the offset. In an RTL paragraph, the
     // hanging indent arises naturally due to the line width.
     if p.config.dir == Dir::LTR {
-        offset += p.config.hanging_indent;
+        offset += p.config.hanging_indent + indent;
     }
 
     // Handle hanging punctuation to the left: in RTL text the line's start is its
     // logical end (end-margin table); in LTR text opening punctuation hangs
-    // (optical margin alignment: “ ‘ ( [ at a line start).
-    if let Some(text) = line.items.leading_text()
+    // (optical margin alignment: “ ‘ ( [ at a line start). Nothing hangs into a
+    // paragraph shape's indent (the room beside a drop).
+    if indent.is_zero()
+        && let Some(text) = line.items.leading_text()
         && let Some(glyph) = text.glyphs.first()
         && text.styles.get(TextElem::overhang)
         && (line.items.len() > 1 || text.glyphs.len() > 1)

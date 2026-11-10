@@ -429,9 +429,43 @@ pub struct ParElem {
     /// ```
     pub hanging_indent: Length,
 
+    /// Indents the paragraph's first `lines` lines by `indent` (a paragraph
+    /// shape, like TeX's `\hangindent` with a negative `\hangafter`): room
+    /// beside a drop capital or numeral. The indented lines and the rest of the
+    /// paragraph are broken together, as one paragraph, by the line breaker.
+    /// No punctuation hangs into the indent.
+    ///
+    /// ```example
+    /// #set par(justify: true, hang: (lines: 2, indent: 2em))
+    /// #lorem(30)
+    /// ```
+    pub hang: ParHang,
+
     /// The contents of the paragraph.
     #[required]
     pub body: Content,
+}
+
+/// The paragraph shape of [`ParElem::hang`]: its first `lines` lines indented
+/// by `indent`.
+#[derive(Debug, Copy, Clone, Default, PartialEq, Hash)]
+pub struct ParHang {
+    /// How many lines are indented.
+    pub lines: usize,
+    /// How far they are indented.
+    pub indent: Length,
+}
+
+cast! {
+    ParHang,
+    self => Value::Dict(dict! { "lines" => self.lines, "indent" => self.indent }),
+    _: crate::foundations::NoneValue => Self::default(),
+    mut dict: Dict => {
+        let lines = dict.take("lines")?.cast::<usize>()?;
+        let indent = dict.take("indent")?.cast::<Length>()?;
+        dict.finish(&["lines", "indent"])?;
+        Self { lines, indent }
+    },
 }
 
 #[scope]

@@ -14,7 +14,7 @@ pub use self::shaping::{SharedShapingContext, create_shape_plan, get_font_and_co
 use comemo::{Track, Tracked, TrackedMut};
 use typst_library::diag::SourceResult;
 use typst_library::engine::{Engine, Route, Sink, Traced};
-use typst_library::foundations::{Packed, Smart, StyleChain};
+use typst_library::foundations::{Packed, Resolve, Smart, StyleChain};
 use typst_library::introspection::{Introspector, Locator, LocatorLink, SplitLocator};
 use typst_library::layout::{Abs, AlignElem, Dir, FixedAlignment, Fragment, Size};
 use typst_library::model::{
@@ -118,6 +118,10 @@ fn layout_par_impl(
             linebreaks: elem.linebreaks.get(styles),
             first_line_indent: elem.first_line_indent.get(styles),
             hanging_indent: elem.hanging_indent.resolve(styles),
+            hang: {
+                let h = elem.hang.get(styles);
+                (h.lines, h.indent.resolve(styles))
+            },
         },
     )
 }
@@ -144,6 +148,7 @@ pub fn layout_inline<'a>(
             linebreaks: shared.get(ParElem::linebreaks),
             first_line_indent: shared.get(ParElem::first_line_indent),
             hanging_indent: shared.resolve(ParElem::hanging_indent),
+            hang: (0, Abs::zero()),
         },
     )
 }
@@ -218,6 +223,11 @@ fn configuration(
         } else {
             Abs::zero()
         },
+        hang: if situation.is_some() && base.hang.0 > 0 && !base.hang.1.is_zero() {
+            base.hang
+        } else {
+            (0, Abs::zero())
+        },
         numbering_marker: shared.get_cloned(ParLine::numbering).map(|numbering| {
             Packed::new(ParLineMarker::new(
                 numbering,
@@ -238,6 +248,13 @@ fn configuration(
         fallback: shared.get(TextElem::fallback),
         cjk_latin_spacing: shared.get(TextElem::cjk_latin_spacing).is_auto(),
         costs: shared.get(TextElem::costs),
+    }
+}
+
+impl Config {
+    /// The paragraph shape's indent of line `index` (zero-based).
+    fn hang_at(&self, index: usize) -> Abs {
+        if index < self.hang.0 { self.hang.1 } else { Abs::zero() }
     }
 }
 
@@ -263,6 +280,7 @@ struct ConfigBase {
     linebreaks: Smart<Linebreaks>,
     first_line_indent: FirstLineIndent,
     hanging_indent: Abs,
+    hang: (usize, Abs),
 }
 
 /// Shared configuration for the whole inline layout.
@@ -277,6 +295,9 @@ struct Config {
     first_line_indent: Abs,
     /// The indent that all but the first line of a paragraph should have.
     hanging_indent: Abs,
+    /// The paragraph shape: how many first lines are indented, and by how much
+    /// (`(0, 0pt)` for none).
+    hang: (usize, Abs),
     /// Configuration for line numbering.
     numbering_marker: Option<Packed<ParLineMarker>>,
     /// The resolved horizontal alignment.
