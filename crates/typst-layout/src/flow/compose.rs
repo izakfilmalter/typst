@@ -254,6 +254,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
                 height(k),
                 budget,
                 spec.level_notes,
+                step,
             )?;
             if trial.is_some() {
                 best = trial;
@@ -274,6 +275,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
                     height(mid),
                     budget,
                     spec.level_notes,
+                    step,
                 )? {
                     Some(result) => {
                         hi = mid;
@@ -282,6 +284,15 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
                     None => lo = mid,
                 }
             }
+        }
+
+        // Level notes that cannot be had at any height (a short column with
+        // many notes beside a long one with few): the columns at full height,
+        // unlevelled, each column's notes still raised to right under its text.
+        if best.is_none() && spec.level_notes {
+            best = self.balance_trial(
+                &locator, pod, checkpoint, &initial, full, budget, false, step,
+            )?;
         }
 
         self.page_insertions = page_insertions;
@@ -310,6 +321,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         height: Abs,
         budget: usize,
         level_notes: bool,
+        step: Abs,
     ) -> SourceResult<Option<(Frame, Work<'a, 'b>)>> {
         let page_insertions = self.page_insertions.clone();
         // Level notes: each column with notes keeps free, below them, the
@@ -357,6 +369,64 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         };
         let reached = self.balance.take().is_some();
         let fits = reached && self.pending <= budget;
+        // Notes stand right under the text: the balanced height is set by the
+        // deepest column, so a column whose flow ends higher would leave its
+        // notes at the foot, with a gap above their separator. Raise them by
+        // the whole steps of that gap (so they stay on the step's grid) — with
+        // level notes by the same amount in every column that has notes (the
+        // smallest gap), so their separators stay level. The flow keeps its
+        // breaks: each column still has room for what it holds.
+        let mut result = result;
+        if fits && result.is_ok() && step > Abs::zero() {
+            let gaps: Vec<Option<Abs>> = self
+                .extents
+                .iter()
+                .enumerate()
+                .map(|(i, e)| {
+                    (e.1 > Abs::zero()).then(|| {
+                        height - reserves.get(i).copied().unwrap_or_default() - e.1 - e.0
+                    })
+                })
+                .collect();
+            let lift_of = |g: Abs| step * ((g / step + 1e-6).floor().max(0.0));
+            let lifts: Vec<Abs> = if level_notes {
+                let min = gaps.iter().flatten().copied().reduce(Abs::min);
+                let l = min.map(lift_of).unwrap_or_default();
+                gaps.iter().map(|g| if g.is_some() { l } else { Abs::zero() }).collect()
+            } else {
+                gaps.iter().map(|g| g.map(lift_of).unwrap_or_default()).collect()
+            };
+            if lifts.iter().any(|l| *l > Abs::zero()) {
+                let flows: Vec<Abs> = self.extents.iter().map(|e| e.0).collect();
+                let work = self.work.clone();
+                let spill = self.footnote_spill.clone();
+                let queue = self.footnote_queue.clone();
+                *self.work = checkpoint.clone();
+                self.footnote_spill = initial.0.clone();
+                self.footnote_queue = initial.1.clone();
+                self.balance = None;
+                self.pending = 0;
+                self.used = Abs::zero();
+                self.reserves = (0..lifts.len())
+                    .map(|i| reserves.get(i).copied().unwrap_or_default() + lifts[i])
+                    .collect();
+                let lifted = self.page_contents(locator.relayout(), pod, Some(height));
+                self.reserves.clear();
+                let again = self.balance.take().is_some() && self.pending <= budget;
+                let same = self.extents.len() == flows.len()
+                    && self.extents.iter().zip(&flows).all(|(e, f)| e.0.approx_eq(*f));
+                match lifted {
+                    Ok(frame) if again && same => result = Ok(frame),
+                    Err(Stop::Error(err)) => return Err(err),
+                    _ => {
+                        // (the lifted layout differs: keep the one found)
+                        *self.work = work;
+                        self.footnote_spill = spill;
+                        self.footnote_queue = queue;
+                    }
+                }
+            }
+        }
         self.page_insertions = page_insertions;
         match result {
             Ok(frame) if fits => Ok(Some((frame, self.work.clone()))),
