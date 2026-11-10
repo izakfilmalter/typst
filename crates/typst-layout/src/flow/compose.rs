@@ -64,6 +64,7 @@ pub fn compose(
         notes_foot: None,
         flow_cap: None,
         flow_sum: Abs::zero(),
+        cap_room: Abs::zero(),
     }
     .page(locator, regions)
 }
@@ -136,6 +137,9 @@ pub struct Composer<'a, 'b, 'x, 'y> {
     /// The height used by in-flow content alone, summed over the region's
     /// columns (a lower bound for text-only balancing).
     flow_sum: Abs,
+    /// Under a `flow_cap`: the room below the capped text that the current
+    /// column's footnotes may still take (down to the foot).
+    cap_room: Abs,
 }
 
 /// How many column heights balancing tries upwards from its lower bound
@@ -625,8 +629,11 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
             // (level notes in a balanced region: the column's reserve at its foot)
             pod.size.y -= self.reserves.get(self.column).copied().unwrap_or_default();
             // (notes at the foot: the text takes at most the balanced height)
+            self.cap_room = Abs::zero();
             if let Some(cap) = self.flow_cap {
+                let uncapped = pod.size.y;
                 pod.size.y.set_min(cap);
+                self.cap_room = (uncapped - pod.size.y).max(Abs::zero());
             }
 
             self.balance = None;
@@ -969,6 +976,8 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         // Reuse that space before increasing the shared insertion height.
         pod.size.y += area.lane_slack(lane);
         pod.size.y -= flow_need + separator_need + self.config.footnote.gap;
+        // (notes at the foot: the entry may take the room below the capped text)
+        pod.size.y += self.cap_room;
 
         // Layout the footnote entry.
         let mut frames =
@@ -1029,9 +1038,18 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         }
 
         // Save the separator.
+        // (under a flow cap, what the insertions take of the room below the
+        // capped text does not shrink the text's region)
+        let room = self.cap_room;
+        let mut used_room = Abs::zero();
+        let mut shrink = |regions: &mut Regions, by: Abs| {
+            let r = by.min(room - used_room).max(Abs::zero());
+            used_room += r;
+            regions.size.y -= by - r;
+        };
         if let Some(frame) = separator {
             area.push_footnote_separator(self.config, frame);
-            regions.size.y -= separator_need;
+            shrink(regions, separator_need);
         }
 
         // Save the footnote's frame.
@@ -1048,7 +1066,8 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
             let frame = layout_footnote_separator(self.engine, self.config, base)?;
             area.push_lane_separator(lane, x, frame);
         }
-        regions.size.y -= area.height() - before;
+        shrink(regions, area.height() - before);
+        self.cap_room -= used_room;
 
         // Save the spill.
         if !iter.as_slice().is_empty() {
