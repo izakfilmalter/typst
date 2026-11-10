@@ -1523,7 +1523,7 @@ ddc4687835ef04e9d3f137b4b036f4dc par-first-line-indent-all-list
 2d49698b1397cda084c816be8f42f4c0 par-hang-all-lines
 5470ce0a7e9a69b942788e17558be26d par-hang-basic
 a33f5447ffd10b23ef948f2a52f7753c par-hang-contrast
-fbcd2307277d7c8ed27f4b2e1da53e65 par-hang-flex
+d9cecfa0b17133d1c1b484b7c5ce4fdc par-hang-flex
 e0550977f881cf04832e1c6b5ea939ec par-hang-flex-zero
 91f68e34c935cd293c420a1137de409b par-hang-no-overhang
 4428165d5b1c32072c7b18a6b8c97f15 par-hang-soft-hyphen
