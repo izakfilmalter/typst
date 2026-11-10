@@ -1528,6 +1528,7 @@ eb2f8b8ae541f1bb2e3bdb79f5bc3738 par-hanging-indent
 d95885370057fafbec92bc6c78a19eef par-hanging-indent-rtl
 0e0bd10f5ca15dec4e7c8b17822c1357 par-hanging-indent-semantic
 d19daf798d5ad2500b0c4bd503523a69 par-leading-and-spacing
+354f32115c78f006cd9f820af65066aa par-looseness
 493953ae135d1f8cd7a106b17c4da5bb par-metadata-after-trimmed-space
 bdc6d86984d0182d1a47409cff68e327 par-semantic
 1a0df16bb4732c8430776d3b35e11b6f par-semantic-align

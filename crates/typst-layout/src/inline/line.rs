@@ -745,6 +745,7 @@ impl<'a> Items<'a> {
     }
 
     /// Access the first item (skipping tags), if it is text.
+    #[allow(dead_code)]
     pub fn leading_text(&self) -> Option<&ShapedText<'a>> {
         self.0.iter().find(|(_, item)| !item.is_tag())?.1.text()
     }

@@ -246,7 +246,13 @@ fn linebreak_optimized<'a>(
     // Determines the exact costs of a likely good layout through Knuth-Plass
     // with approximate metrics. We can use this cost as an upper bound to prune
     // the search space in our proper optimization pass below.
-    let upper_bound = linebreak_optimized_approximate(engine, p, width, &metrics);
+    // (with a looseness the approximate layout's cost bounds nothing: the paragraph
+    // asked for is another length)
+    let upper_bound = if p.config.looseness != 0 {
+        Cost::INFINITY
+    } else {
+        linebreak_optimized_approximate(engine, p, width, &metrics)
+    };
 
     // Using the upper bound, perform exact optimized linebreaking.
     linebreak_optimized_bounded(engine, p, width, &metrics, upper_bound)
@@ -275,10 +281,12 @@ fn linebreak_optimized_bounded<'a>(
         /// The spacing class of this line (see `fitness`), kept apart only where
         /// the next line is a shape line costed against it (`costs.contrast`).
         fit: i8,
+        /// Lines up to and including this one (kept apart only with a looseness).
+        count: usize,
     }
 
     let shape = p.config.hang.0;
-    let slots = (shape + 1) * FITNESS_SLOTS;
+    let loose = p.config.looseness != 0;
 
     // Dynamic programming table.
     let mut table = vec![Entry {
@@ -288,6 +296,7 @@ fn linebreak_optimized_bounded<'a>(
         end: 0,
         class: 0,
         fit: 0,
+        count: 0,
     }];
 
     let mut active = 0;
@@ -296,7 +305,9 @@ fn linebreak_optimized_bounded<'a>(
 
     breakpoints(p, |end, breakpoint| {
         // Find the optimal predecessor (per class).
-        let mut best: Vec<Option<Entry>> = (0..slots).map(|_| None).collect();
+        // (keyed by slot, and by line count with a looseness)
+        let mut best: std::collections::BTreeMap<(usize, usize), Entry> =
+            std::collections::BTreeMap::new();
 
         // A lower bound for the cost of all following line attempts (per class
         // of the predecessor: the measure depends on it).
@@ -371,14 +382,17 @@ fn linebreak_optimized_bounded<'a>(
             // If this attempt is better than what we had before, take it!
             let class = (pred.class + 1).min(shape);
             let slot = fitness_slot(metrics, shape, class, fit);
-            if best[slot].as_ref().is_none_or(|best| best.total >= total) {
-                best[slot] = Some(Entry {
+            let count = pred.count + 1;
+            let key = (if loose { count } else { 0 }, slot);
+            if best.get(&key).is_none_or(|best| best.total >= total) {
+                best.insert(key, Entry {
                     pred: pred_index,
                     total,
                     line: attempt,
                     end,
                     class,
                     fit,
+                    count,
                 });
             }
         }
@@ -390,15 +404,33 @@ fn linebreak_optimized_bounded<'a>(
         }
 
         last_start = table.len();
-        table.extend(best.into_iter().flatten());
+        table.extend(best.into_values());
         prev_end = end;
     });
 
-    // Retrace the best path (from the cheapest entry at the last breakpoint).
+    // Retrace the best path (from the cheapest entry at the last breakpoint; with a
+    // looseness, the cheapest of the paragraph that many lines longer or shorter than
+    // the best, or as near it as the text allows).
     let mut lines = Vec::with_capacity(16);
-    let mut idx = (last_start..table.len())
-        .min_by(|&a, &b| table[a].total.total_cmp(&table[b].total))
-        .unwrap_or(table.len() - 1);
+    let finals = last_start..table.len();
+    let cheapest = |r: &mut dyn Iterator<Item = usize>| {
+        r.min_by(|&a, &b| table[a].total.total_cmp(&table[b].total))
+    };
+    let mut idx = cheapest(&mut finals.clone()).unwrap_or(table.len() - 1);
+    if loose && idx < table.len() {
+        let want = table[idx].count as i64 + p.config.looseness;
+        let near = finals
+            .clone()
+            .filter(|&i| table[i].total < 1e12)
+            .map(|i| table[i].count as i64)
+            .filter(|&c| (c - table[idx].count as i64).signum() == p.config.looseness.signum())
+            .min_by_key(|&c| (c - want).abs());
+        if let Some(c) = near
+            && let Some(i) = cheapest(&mut finals.clone().filter(|&i| table[i].count as i64 == c))
+        {
+            idx = i;
+        }
+    }
 
     // This should only happen if our bound was faulty. Which shouldn't happen!
     if table[idx].end != p.text.len() {

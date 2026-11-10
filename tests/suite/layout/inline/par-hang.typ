@@ -81,3 +81,13 @@ aa bbb congregations#h(-0.015em)#footnote[y] of the
 “Let cares like a wild deluge come,
 
 “And storms of sorrow fall,”
+
+--- par-looseness paged ---
+// A paragraph set a line longer, and a line shorter, than its best breaks.
+#set page(width: 160pt, height: auto)
+#set par(justify: true)
+#lorem(40)
+#line(length: 100%)
+#par(looseness: 1, lorem(40))
+#line(length: 100%)
+#par(looseness: -1, lorem(40))

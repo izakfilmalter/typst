@@ -441,6 +441,19 @@ pub struct ParElem {
     /// ```
     pub hang: ParHang,
 
+    /// Sets the justified paragraph this many lines longer (or, negative,
+    /// shorter) than its best breaks would, as TeX's `\looseness`: the best
+    /// breaks of that length, or of the length nearest it the text allows.
+    ///
+    /// ```example
+    /// #set par(justify: true)
+    /// #lorem(30)
+    ///
+    /// #par(looseness: 1, lorem(30))
+    /// ```
+    #[default(0)]
+    pub looseness: i64,
+
     /// The contents of the paragraph.
     #[required]
     pub body: Content,

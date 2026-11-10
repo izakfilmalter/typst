@@ -122,6 +122,7 @@ fn layout_par_impl(
                 let h = elem.hang.get(styles);
                 (h.lines, h.indent.resolve(styles))
             },
+            looseness: elem.looseness.get(styles),
         },
     )
 }
@@ -149,6 +150,7 @@ pub fn layout_inline<'a>(
             first_line_indent: shared.get(ParElem::first_line_indent),
             hanging_indent: shared.resolve(ParElem::hanging_indent),
             hang: (0, Abs::zero()),
+            looseness: 0,
         },
     )
 }
@@ -228,6 +230,7 @@ fn configuration(
         } else {
             (0, Abs::zero())
         },
+        looseness: if situation.is_some() && justify { base.looseness } else { 0 },
         numbering_marker: shared.get_cloned(ParLine::numbering).map(|numbering| {
             Packed::new(ParLineMarker::new(
                 numbering,
@@ -281,6 +284,7 @@ struct ConfigBase {
     first_line_indent: FirstLineIndent,
     hanging_indent: Abs,
     hang: (usize, Abs),
+    looseness: i64,
 }
 
 /// Shared configuration for the whole inline layout.
@@ -298,6 +302,8 @@ struct Config {
     /// The paragraph shape: how many first lines are indented, and by how much
     /// (`(0, 0pt)` for none).
     hang: (usize, Abs),
+    /// Lines more (or fewer) than the best breaks give, as TeX's `\looseness`.
+    looseness: i64,
     /// Configuration for line numbering.
     numbering_marker: Option<Packed<ParLineMarker>>,
     /// The resolved horizontal alignment.

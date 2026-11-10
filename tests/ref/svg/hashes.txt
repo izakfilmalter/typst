@@ -1523,6 +1523,7 @@ e58d71d92a252c5cb2258fdab27ae396 par-first-line-indent-all-list
 559ab61b46107840fa0affa7b963f7fd par-hanging-indent-rtl
 551762fb87ff750754c41c61170f4c6b par-hanging-indent-semantic
 a57d370e15462359d602a9d2d4076492 par-leading-and-spacing
+f5376b8ffe5e5e9e8af7a0c96fee07fc par-looseness
 4cde56799af82ddea704eec149b3880e par-metadata-after-trimmed-space
 4c288e3ced11b36fbad1afa275cf6af9 par-semantic
 2b1cf3e37f065378dcd705be91ca4e33 par-semantic-align
