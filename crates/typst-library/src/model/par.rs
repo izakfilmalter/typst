@@ -435,6 +435,12 @@ pub struct ParElem {
     /// paragraph are broken together, as one paragraph, by the line breaker.
     /// No punctuation hangs into the indent.
     ///
+    /// With a `flex`, the indent may grow or shrink by up to that much (tried
+    /// in half steps): the line breaker keeps the indent whose breaks cost
+    /// least, with as many lines as at the nominal indent. A zero-width box
+    /// at the very start of the paragraph (the drop's anchor) stays at the
+    /// nominal indent, so what it places does not move.
+    ///
     /// ```example
     /// #set par(justify: true, hang: (lines: 2, indent: 2em))
     /// #lorem(30)
@@ -467,17 +473,27 @@ pub struct ParHang {
     pub lines: usize,
     /// How far they are indented.
     pub indent: Length,
+    /// How far the indent may grow or shrink to break the lines better.
+    pub flex: Length,
 }
 
 cast! {
     ParHang,
-    self => Value::Dict(dict! { "lines" => self.lines, "indent" => self.indent }),
+    self => {
+        let mut d = dict! { "lines" => self.lines, "indent" => self.indent };
+        // (the flex only where one is set: a plain shape reads as before)
+        if self.flex != Length::zero() {
+            d.insert("flex".into(), self.flex.into_value());
+        }
+        Value::Dict(d)
+    },
     _: crate::foundations::NoneValue => Self::default(),
     mut dict: Dict => {
         let lines = dict.take("lines")?.cast::<usize>()?;
         let indent = dict.take("indent")?.cast::<Length>()?;
-        dict.finish(&["lines", "indent"])?;
-        Self { lines, indent }
+        let flex = dict.take("flex").ok().map(|v| v.cast::<Length>()).transpose()?.unwrap_or_default();
+        dict.finish(&["lines", "indent", "flex"])?;
+        Self { lines, indent, flex }
     },
 }
 

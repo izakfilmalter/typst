@@ -36,7 +36,9 @@ pub fn finalize(
         .iter()
         .enumerate()
         .map(|(i, line)| {
-            commit(engine, p, line, width, region.y, p.config.hang_at(i), locator)
+            // (the first line's anchor box stays at the nominal indent)
+            let anchor = if i == 0 { -p.config.hang_shift.get() } else { Abs::zero() };
+            commit(engine, p, line, width, region.y, p.config.hang_at(i), anchor, locator)
         })
         .collect::<SourceResult<_>>()
         .map(Fragment::frames)

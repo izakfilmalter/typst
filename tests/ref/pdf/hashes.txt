@@ -960,6 +960,7 @@ d190e120731dd688c8f86840bd71c2de line-numbers-place-out-of-order
 0ba47e4697e2ed95b16428f509536487 line-stroke
 1ce3c89db3c90fe4badfe582c71d8db7 line-stroke-dash
 994737a4975d9bb338860b415117c36c line-stroke-set
+d407198cfcdd89adb7a2372806fac168 linebreak-capitalized-cost
 2caa943b0797350f82b0298bac198a83 linebreak-cite-punctuation
 1b38c7415432d1f30a8330db32962e4f linebreak-default-ignorables
 1a38492b52aa7916bf0af5e3658a55c3 linebreak-hyphen-nbsp
@@ -1520,6 +1521,8 @@ ddc4687835ef04e9d3f137b4b036f4dc par-first-line-indent-all-list
 2d49698b1397cda084c816be8f42f4c0 par-hang-all-lines
 5470ce0a7e9a69b942788e17558be26d par-hang-basic
 a33f5447ffd10b23ef948f2a52f7753c par-hang-contrast
+fbcd2307277d7c8ed27f4b2e1da53e65 par-hang-flex
+e0550977f881cf04832e1c6b5ea939ec par-hang-flex-zero
 91f68e34c935cd293c420a1137de409b par-hang-no-overhang
 4428165d5b1c32072c7b18a6b8c97f15 par-hang-soft-hyphen
 4ba133376cd8124c2a3f9daa14b78898 par-hang-zero

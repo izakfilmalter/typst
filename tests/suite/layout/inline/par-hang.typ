@@ -91,3 +91,26 @@ aa bbb congregations#h(-0.015em)#footnote[y] of the
 #par(looseness: 1, lorem(40))
 #line(length: 100%)
 #par(looseness: -1, lorem(40))
+
+--- par-hang-flex paged ---
+// The indent may flex to break the shape's lines better; the anchor box at the
+// paragraph's start (a drop) keeps the nominal indent.
+#set page(width: 160pt, height: auto)
+#set text(costs: (contrast: 300%))
+#set par(justify: true, hang: (lines: 2, indent: 30pt, flex: 4pt))
+#box(width: 0pt, place(dx: -30pt, rect(width: 26pt, height: 20pt, fill: aqua)))#lorem(40)
+
+--- par-hang-flex-zero paged ---
+// A zero flex is the plain shape.
+#set page(width: 160pt, height: auto)
+#set par(justify: true, hang: (lines: 2, indent: 30pt, flex: 0pt))
+#lorem(40)
+
+--- linebreak-capitalized-cost paged ---
+// A capitalised word (a name) breaks only where nothing else will do.
+#set page(width: 105pt, height: auto)
+#set text(lang: "en", costs: (hyphenation: 40%, overstretch: 1000%))
+#set par(justify: true)
+In the text of the Septuagint, here quoted, differs from the Hebrew reading of the Septuagint, which in this place.
+#set text(costs: (capitalized: 10000%))
+In the text of the Septuagint, here quoted, differs from the Hebrew reading of the Septuagint, which in this place.

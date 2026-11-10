@@ -583,6 +583,10 @@ pub struct TextElem {
     /// - `contrast`: setting neighbouring lines of a paragraph shape (the lines
     ///   beside a drop, @par.hang) with word gaps of very different widths
     ///   (`{0%}`, the default, does not cost it)
+    /// - `capitalized`: hyphenating a word that begins with a capital letter
+    ///   (a proper name), as a share of the hyphenation cost: `{100%}`, the
+    ///   default, costs it like any other word; `{2000%}` breaks a name only
+    ///   where the paragraph has no other good break
     ///
     /// Hyphenation is generally avoided by placing the whole word on the next
     /// line, so a higher hyphenation cost can result in awkward justification
@@ -1519,6 +1523,7 @@ pub struct Costs {
     orphan: Option<Ratio>,
     overstretch: Option<Ratio>,
     contrast: Option<Ratio>,
+    capitalized: Option<Ratio>,
 }
 
 impl Costs {
@@ -1551,6 +1556,11 @@ impl Costs {
     pub fn contrast(&self) -> Ratio {
         self.contrast.unwrap_or(Ratio::zero())
     }
+
+    #[must_use]
+    pub fn capitalized(&self) -> Ratio {
+        self.capitalized.unwrap_or(Ratio::one())
+    }
 }
 
 impl Fold for Costs {
@@ -1563,6 +1573,7 @@ impl Fold for Costs {
             orphan: self.orphan.or(outer.orphan),
             overstretch: self.overstretch.or(outer.overstretch),
             contrast: self.contrast.or(outer.contrast),
+            capitalized: self.capitalized.or(outer.capitalized),
         }
     }
 }
@@ -1576,6 +1587,7 @@ cast! {
         "orphan" => self.orphan(),
         "overstretch" => self.overstretch(),
         "contrast" => self.contrast(),
+        "capitalized" => self.capitalized(),
     ].into_value(),
     mut v: Dict => {
         let ret = Self {
@@ -1585,8 +1597,9 @@ cast! {
             orphan: v.take("orphan").ok().map(|v| v.cast()).transpose()?,
             overstretch: v.take("overstretch").ok().map(|v| v.cast()).transpose()?,
             contrast: v.take("contrast").ok().map(|v| v.cast()).transpose()?,
+            capitalized: v.take("capitalized").ok().map(|v| v.cast()).transpose()?,
         };
-        v.finish(&["hyphenation", "runt", "widow", "orphan", "overstretch", "contrast"])?;
+        v.finish(&["hyphenation", "runt", "widow", "orphan", "overstretch", "contrast", "capitalized"])?;
         ret
     },
 }

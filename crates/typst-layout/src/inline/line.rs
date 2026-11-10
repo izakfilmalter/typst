@@ -491,6 +491,7 @@ pub fn commit(
     width: Abs,
     full: Abs,
     indent: Abs,
+    anchor: Abs,
     locator: &mut SplitLocator<'_>,
 ) -> SourceResult<Frame> {
     let mut remaining = width - line.width - p.config.hanging_indent - indent;
@@ -565,7 +566,23 @@ pub fn commit(
 
     // Build the frames and determine the height and baseline.
     let mut frames = vec![];
+    // A zero-width box before any text (a drop's anchor) is shifted by
+    // `anchor`, keeping a paragraph shape's nominal indent.
+    let mut anchor = anchor;
     for &(idx, ref item) in line.items.indexed_iter() {
+        if !anchor.is_zero()
+            && let Item::Frame(frame) = &**item
+            && frame.width().is_zero()
+        {
+            top.set_max(frame.baseline());
+            bottom.set_max(frame.size().y - frame.baseline());
+            frames.push((offset + anchor, frame.clone(), idx));
+            anchor = Abs::zero();
+            continue;
+        }
+        if matches!(&**item, Item::Text(_) | Item::Fractional(..)) || matches!(&**item, Item::Frame(f) if !f.width().is_zero()) {
+            anchor = Abs::zero();
+        }
         let mut push = |offset: &mut Abs, frame: Frame, idx: LogicalIndex| {
             let width = frame.width();
             top.set_max(frame.baseline());

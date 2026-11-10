@@ -71,9 +71,10 @@ pub enum Breakpoint {
     Normal,
     /// A mandatory breakpoint (after '\n' or at the end of the text).
     Mandatory,
-    /// An opportunity for hyphenating and how many chars are before/after it
-    /// in the word.
-    Hyphen(u8, u8),
+    /// An opportunity for hyphenating, how many chars are before/after it in
+    /// the word, and whether the word is capitalised (costed as
+    /// `costs.capitalized` times a hyphenation).
+    Hyphen(u8, u8, bool),
 }
 
 impl Breakpoint {
@@ -242,7 +243,62 @@ fn linebreak_optimized<'a>(
     width: Abs,
 ) -> Vec<Line<'a>> {
     let metrics = CostMetrics::compute(p);
+    let flex = p.config.hang_flex;
+    if flex.is_zero() {
+        return linebreak_optimized_at(engine, p, width, &metrics).0;
+    }
 
+    // A paragraph shape with a flex: the indent that breaks the paragraph at
+    // least cost (half steps within the flex), with as many lines as at the
+    // nominal indent, the nominal indent on a tie.
+    p.config.hang_shift.set(Abs::zero());
+    let (mut best, mut best_cost) = linebreak_optimized_at(engine, p, width, &metrics);
+    let count = best.len();
+    // (lines beside the shape already even — no line past half its stretch, no
+    // contrast between neighbours — keep the nominal indent: the trials cost a
+    // paragraph's breaking four times over)
+    let shape = p.config.hang.0.min(count.saturating_sub(1));
+    let ratios: Vec<f64> = (0..shape)
+        .map(|i| {
+            let l = &best[i];
+            raw_ratio(
+                p,
+                width - p.config.hang_at(i),
+                l.width,
+                l.stretchability(),
+                l.shrinkability(),
+                l.justifiables(),
+            )
+        })
+        .collect();
+    let even = ratios.iter().all(|&r| r <= 0.6)
+        && ratios.windows(2).all(|w| {
+            (gap_log(&metrics, w[0]) - gap_log(&metrics, w[1])).abs() <= CONTRAST_FREE
+        });
+    if even {
+        return best;
+    }
+    let mut shift = Abs::zero();
+    for k in [-1.0, -0.5, 0.5, 1.0] {
+        let s = flex * k;
+        p.config.hang_shift.set(s);
+        let (lines, cost) = linebreak_optimized_at(engine, p, width, &metrics);
+        if lines.len() == count && cost < best_cost - BOUND_EPS {
+            (best, best_cost, shift) = (lines, cost, s);
+        }
+    }
+    p.config.hang_shift.set(shift);
+    best
+}
+
+/// Optimized line breaking at the current paragraph shape: the lines and their
+/// total cost.
+fn linebreak_optimized_at<'a>(
+    engine: &Engine,
+    p: &'a Preparation<'a>,
+    width: Abs,
+    metrics: &CostMetrics,
+) -> (Vec<Line<'a>>, Cost) {
     // Determines the exact costs of a likely good layout through Knuth-Plass
     // with approximate metrics. We can use this cost as an upper bound to prune
     // the search space in our proper optimization pass below.
@@ -251,11 +307,11 @@ fn linebreak_optimized<'a>(
     let upper_bound = if p.config.looseness != 0 {
         Cost::INFINITY
     } else {
-        linebreak_optimized_approximate(engine, p, width, &metrics)
+        linebreak_optimized_approximate(engine, p, width, metrics)
     };
 
     // Using the upper bound, perform exact optimized linebreaking.
-    linebreak_optimized_bounded(engine, p, width, &metrics, upper_bound)
+    linebreak_optimized_bounded(engine, p, width, metrics, upper_bound)
 }
 
 /// Performs line breaking in optimized Knuth-Plass style, but with an upper
@@ -267,7 +323,7 @@ fn linebreak_optimized_bounded<'a>(
     width: Abs,
     metrics: &CostMetrics,
     upper_bound: Cost,
-) -> Vec<Line<'a>> {
+) -> (Vec<Line<'a>>, Cost) {
     /// An entry in the dynamic programming table for inline layout optimization.
     struct Entry<'a> {
         pred: usize,
@@ -441,6 +497,7 @@ fn linebreak_optimized_bounded<'a>(
         return linebreak_optimized_bounded(engine, p, width, metrics, Cost::INFINITY);
     }
 
+    let total = table[idx].total;
     while idx != 0 {
         table.truncate(idx + 1);
         let entry = table.pop().unwrap();
@@ -449,7 +506,7 @@ fn linebreak_optimized_bounded<'a>(
     }
 
     lines.reverse();
-    lines
+    (lines, total)
 }
 
 /// Runs the normal Knuth-Plass algorithm, but instead of building proper lines
@@ -767,14 +824,17 @@ fn raw_cost(
     }
 
     // Penalize hyphenation.
-    if let Breakpoint::Hyphen(l, r) = breakpoint {
+    if let Breakpoint::Hyphen(l, r, caps) = breakpoint {
         // We penalize hyphenations close to the edges of the word (< LIMIT
         // chars) extra. For each step of distance from the limit, we add 15%
         // to the cost.
         const LIMIT: u8 = 5;
         let steps = LIMIT.saturating_sub(l) + LIMIT.saturating_sub(r);
         let extra = 0.15 * steps as f64;
-        penalty += (1.0 + extra) * metrics.hyph_cost;
+        // A capitalised word (a proper name) costs `costs.capitalized` times
+        // as much to break.
+        let caps = if caps { metrics.caps_factor } else { 1.0 };
+        penalty += (1.0 + extra) * metrics.hyph_cost * caps;
     }
 
     // Penalize two consecutive dashes extra (not necessarily hyphens).
@@ -941,12 +1001,19 @@ fn breakpoints(p: &Preparation, mut f: impl FnMut(usize, Breakpoint)) {
                         .take_while(in_word)
                         .filter(|&ch| ch != SOFT_HYPHEN)
                         .count();
+                    let caps = text[..point]
+                        .chars()
+                        .rev()
+                        .take_while(in_word)
+                        .filter(|&ch| ch != SOFT_HYPHEN)
+                        .last()
+                        .is_some_and(char::is_uppercase);
                     let r = text[point..]
                         .chars()
                         .take_while(in_word)
                         .filter(|&ch| ch != SOFT_HYPHEN)
                         .count();
-                    Breakpoint::Hyphen(l.saturating_as(), r.saturating_as())
+                    Breakpoint::Hyphen(l.saturating_as(), r.saturating_as(), caps)
                 }
 
                 _ => Breakpoint::Normal,
@@ -988,6 +1055,7 @@ fn hyphenations(
 ) {
     let Some(lang) = lang_at(p, offset) else { return };
     let count = word.chars().count();
+    let caps = word.chars().next().is_some_and(char::is_uppercase);
     let end = offset + word.len();
 
     let mut chars = 0;
@@ -1019,7 +1087,7 @@ fn hyphenations(
         let r = (count - chars).saturating_as::<u8>();
 
         // Call `f` for the word-internal hyphenation opportunity.
-        f(offset, Breakpoint::Hyphen(l, r));
+        f(offset, Breakpoint::Hyphen(l, r, caps));
     }
 }
 
@@ -1113,6 +1181,8 @@ struct CostMetrics {
     approx_hyphen_width: Abs,
     hyph_cost: Cost,
     runt_cost: Cost,
+    /// How many times a hyphenation a capitalised word's costs.
+    caps_factor: f64,
     /// How many times stretch past the justification limits counts.
     overstretch: f64,
     /// The cost of a step of spacing contrast between a paragraph shape's lines
@@ -1153,6 +1223,7 @@ impl CostMetrics {
             // Costs.
             hyph_cost: DEFAULT_HYPH_COST * p.config.costs.hyphenation().get(),
             runt_cost: DEFAULT_RUNT_COST * p.config.costs.runt().get(),
+            caps_factor: p.config.costs.capitalized().get().max(0.0),
             overstretch: p.config.costs.overstretch().get().max(0.0),
             contrast: CONTRAST_COST * p.config.costs.contrast().get().max(0.0),
             gap_up: (limits.spacing().max.rel.get() - 1.0).max(0.0)

@@ -122,6 +122,7 @@ fn layout_par_impl(
                 let h = elem.hang.get(styles);
                 (h.lines, h.indent.resolve(styles))
             },
+            hang_flex: elem.hang.get(styles).flex.resolve(styles).max(Abs::zero()),
             looseness: elem.looseness.get(styles),
         },
     )
@@ -150,6 +151,7 @@ pub fn layout_inline<'a>(
             first_line_indent: shared.get(ParElem::first_line_indent),
             hanging_indent: shared.resolve(ParElem::hanging_indent),
             hang: (0, Abs::zero()),
+            hang_flex: Abs::zero(),
             looseness: 0,
         },
     )
@@ -230,6 +232,12 @@ fn configuration(
         } else {
             (0, Abs::zero())
         },
+        hang_flex: if situation.is_some() && base.hang.0 > 0 && !base.hang.1.is_zero() && justify {
+            base.hang_flex
+        } else {
+            Abs::zero()
+        },
+        hang_shift: std::cell::Cell::new(Abs::zero()),
         looseness: if situation.is_some() && justify { base.looseness } else { 0 },
         numbering_marker: shared.get_cloned(ParLine::numbering).map(|numbering| {
             Packed::new(ParLineMarker::new(
@@ -257,7 +265,7 @@ fn configuration(
 impl Config {
     /// The paragraph shape's indent of line `index` (zero-based).
     fn hang_at(&self, index: usize) -> Abs {
-        if index < self.hang.0 { self.hang.1 } else { Abs::zero() }
+        if index < self.hang.0 { self.hang.1 + self.hang_shift.get() } else { Abs::zero() }
     }
 }
 
@@ -284,6 +292,7 @@ struct ConfigBase {
     first_line_indent: FirstLineIndent,
     hanging_indent: Abs,
     hang: (usize, Abs),
+    hang_flex: Abs,
     looseness: i64,
 }
 
@@ -302,6 +311,11 @@ struct Config {
     /// The paragraph shape: how many first lines are indented, and by how much
     /// (`(0, 0pt)` for none).
     hang: (usize, Abs),
+    /// How far the shape's indent may grow or shrink (`par.hang.flex`).
+    hang_flex: Abs,
+    /// The shift of the shape's indent the line breaker chose within the flex
+    /// (the drop's anchor box keeps the nominal indent).
+    hang_shift: std::cell::Cell<Abs>,
     /// Lines more (or fewer) than the best breaks give, as TeX's `\looseness`.
     looseness: i64,
     /// Configuration for line numbering.
