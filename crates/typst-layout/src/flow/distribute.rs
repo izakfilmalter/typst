@@ -20,6 +20,7 @@ pub fn distribute(composer: &mut Composer, regions: Regions) -> FlowResult<Frame
         items: vec![],
         sticky: None,
         stickable: None,
+        widow: None,
     };
     let init = distributor.snapshot();
     let forced = match distributor.run() {
@@ -64,6 +65,10 @@ struct Distributor<'a, 'b, 'x, 'y, 'z> {
     /// blocks are supposed to always be in the same page as the subsequent
     /// frame, but that is impossible in that case, which is thus pathological.
     stickable: Option<bool>,
+    /// A snapshot taken before a line that widow/orphan prevention groups with
+    /// the lines after it: should one of those move on because its footnotes
+    /// don't fit, the group moves with it, so no line stands alone.
+    widow: Option<DistributionSnapshot<'a, 'b>>,
 }
 
 /// A snapshot of the distribution state.
@@ -135,8 +140,14 @@ impl<'a, 'b> Distributor<'a, 'b, '_, '_, '_> {
             Child::Rel(amount, weakness) => self.rel(*amount, *weakness),
             Child::Fr(fr, weakness) => self.fr(*fr, *weakness),
             Child::Line(line) => self.line(line)?,
-            Child::Single(single) => self.single(single)?,
-            Child::Multi(multi) => self.multi(multi)?,
+            Child::Single(single) => {
+                self.widow = None;
+                self.single(single)?
+            }
+            Child::Multi(multi) => {
+                self.widow = None;
+                self.multi(multi)?
+            }
             Child::Placed(placed) => self.placed(placed)?,
             Child::Flush => self.flush()?,
             Child::Break(weak) => self.break_(*weak)?,
@@ -295,7 +306,30 @@ impl<'a, 'b> Distributor<'a, 'b, '_, '_, '_> {
             return Err(Stop::Finish(false));
         }
 
-        self.frame(line.frame.clone(), line.align, false, false)
+        // A line grouped with the lines after it (its need is more than its
+        // own height): remember where the group starts.
+        let grouped = line.need > line.frame.height() + Abs::pt(0.01);
+        let snap = (grouped && self.widow.is_none()).then(|| self.snapshot());
+        match self.frame(line.frame.clone(), line.align, false, false) {
+            Ok(()) => {
+                if !grouped {
+                    self.widow = None;
+                } else if let Some(snap) = snap {
+                    self.widow = Some(snap);
+                }
+                Ok(())
+            }
+            // The line moves on because its footnotes don't fit here: a line
+            // of its group placed before it moves with it (no widow or orphan
+            // left behind).
+            Err(Stop::Finish(forced)) => {
+                if let Some(snap) = self.widow.take() {
+                    self.restore(snap);
+                }
+                Err(Stop::Finish(forced))
+            }
+            Err(err) => Err(err),
+        }
     }
 
     /// Processes an unbreakable block.

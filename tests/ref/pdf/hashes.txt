@@ -283,7 +283,7 @@ cfaa9e455bd7617f4bb5a28d6b9e6823 footnote-in-place
 1624410af41ab08bcd03e115eb0eb366 footnote-lanes-breakable-row
 25c1bd570e354737f76b5e18667b54ab footnote-lanes-columns
 34eafbd82bacafe645d827cb79059c32 footnote-lanes-grid-break
-e38bfee5579631b6b52f2433ed346e23 footnote-lanes-migration
+f2f45b767e48e7a22fa8d5e17659b160 footnote-lanes-migration
 4f2278fbb0ae68ba339f65c578da90cc footnote-lanes-mixed
 d08517a4534f1063661ff3b896b78ef1 footnote-lanes-nested
 ffa010aaa7fefa29552c90431d4b2c3e footnote-lanes-no-lanes
@@ -304,6 +304,7 @@ d7273c900c1b4663a626b7682eda86cf footnote-orphan-moves-entry
 28bb3bc130581fe09b6be859e10c3492 footnote-ref-multiple
 c81f1e27efaf7ec6f4be4fa1df909acb footnote-space-collapsing
 a06aab3d3484f5fb88103db01e5e0654 footnote-styling
+785ae5b6acef9ff2193ffae7de9d1846 footnote-widow-moves-with-group
 675bce541a95b31c93fec12031313c40 for-loop-basic
 1530bbbbbfc94e0fdb6c830d2ae4b602 gradient-angle-rotation-aspect
 8b2684981c2ac55a162a57fcd8ce35be gradient-conic

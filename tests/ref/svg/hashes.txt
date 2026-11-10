@@ -281,7 +281,7 @@ fcbd89b97ce46f1eaa396e2de3d29599 footnote-float-priority
 c4a18965c52a54675472740c05e6ecb2 footnote-lanes-breakable-row
 a3c75f77a1b0902bee3e9fd2b48b58db footnote-lanes-columns
 6477d98aed337e56a76b64121ef85ab2 footnote-lanes-grid-break
-a2c597048354a4fce8d76764ad215339 footnote-lanes-migration
+98b73b3388202e9c81b280ca0308f91b footnote-lanes-migration
 2598aa472a1f92bec86d816c6481cca4 footnote-lanes-mixed
 6a0035212d5b8d29e79d6c77b54cdf78 footnote-lanes-nested
 744b9bb4edf2fc1351ea3e841972aec1 footnote-lanes-no-lanes
@@ -302,6 +302,7 @@ a81b957f0011be890b17f98173831859 footnote-ref-in-footnote
 10ddb3bcb57061b776ae9385984ec3f6 footnote-ref-multiple
 0c1d0ea8569b0ad86b0437ed02689c88 footnote-space-collapsing
 6d65ff73042df0b525cf13a51a48b9a5 footnote-styling
+8ac1a40aed0bf9be60b53c37baafede3 footnote-widow-moves-with-group
 e1dd84a3bbe74f2867d4568997582423 for-loop-basic
 c1e5314f6ce95e23788bdeeda5895aa4 gradient-angle-rotation-aspect
 ece421a0356d9ef433bbda84c5da0021 gradient-conic
