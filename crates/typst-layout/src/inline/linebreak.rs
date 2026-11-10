@@ -337,6 +337,9 @@ fn linebreak_optimized_bounded<'a>(
         /// The spacing class of this line (see `fitness`), kept apart only where
         /// the next line is a shape line costed against it (`costs.contrast`).
         fit: i8,
+        /// The printed word gap of this line (see `gap_log`), exact: the hard step of
+        /// contrast past `CONTRAST_HARD` is judged against it, not the class.
+        gap: f64,
         /// Lines up to and including this one (kept apart only with a looseness).
         count: usize,
     }
@@ -352,6 +355,7 @@ fn linebreak_optimized_bounded<'a>(
         end: 0,
         class: 0,
         fit: 0,
+        gap: 0.0,
         count: 0,
     }];
 
@@ -411,7 +415,7 @@ fn linebreak_optimized_bounded<'a>(
 
             // Spacing contrast with the line above, between the shape's lines.
             let fit = fitness(metrics, line_ratio);
-            let contrast = contrast_cost(metrics, shape, pred.class, pred.fit, line_ratio);
+            let contrast = contrast_cost(metrics, shape, pred.class, pred.fit, pred.gap, line_ratio);
 
             // The total cost of this line and its chain of predecessors.
             let total = pred.total + line_cost + contrast;
@@ -448,6 +452,7 @@ fn linebreak_optimized_bounded<'a>(
                     end,
                     class,
                     fit,
+                    gap: gap_log(metrics, line_ratio),
                     count,
                 });
             }
@@ -652,6 +657,7 @@ fn linebreak_optimized_approximate(
     // computes its exact cost as that gives us a sound upper bound for the
     // proper optimization pass.
     let mut pred_fit = 0;
+    let mut pred_gap = 0.0;
     for (n, idx) in indices.into_iter().rev().enumerate() {
         let Entry { end, breakpoint, unbreakable, .. } = table[idx];
 
@@ -666,8 +672,9 @@ fn linebreak_optimized_approximate(
             unbreakable,
         );
         let line_cost = line_cost
-            + contrast_cost(metrics, p.config.hang.0, n.min(p.config.hang.0), pred_fit, ratio);
+            + contrast_cost(metrics, p.config.hang.0, n.min(p.config.hang.0), pred_fit, pred_gap, ratio);
         pred_fit = fitness(metrics, ratio);
+        pred_gap = gap_log(metrics, ratio);
 
         // If approximation produces a valid layout without too much shrinking,
         // exact layout is guaranteed to find the same layout. If, however, the
@@ -859,6 +866,12 @@ const CONTRAST_COST: Cost = 4000.0;
 const FITNESS_STEP: f64 = 0.223_143_551_314_209_7; // ln 1.25
 /// Contrast up to this is free: about 1.3×, the eye's tolerance.
 const CONTRAST_FREE: f64 = 0.262_364_264_467_491; // ln 1.3
+/// Contrast past this (about 1.58×, a little inside the 1.6× a reader sees as a loose
+/// line beside a cramped one) costs a hard step on top: `CONTRAST_HARD_FACTOR` steps of
+/// contrast and as many again per class past it, judged on the two lines' exact gaps
+/// (more than a capitalised word's hyphenation, less than a line far past its limits).
+const CONTRAST_HARD: f64 = 0.457_424_847_088_779_6; // ln 1.58
+const CONTRAST_HARD_FACTOR: f64 = 1000.0;
 
 /// The word gap as printed relative to the natural space, as a line with the
 /// given stretch ratio sets it (on a log scale).
@@ -891,20 +904,30 @@ fn fitness_slot(metrics: &CostMetrics, shape: usize, class: usize, fit: i8) -> u
 }
 
 /// The contrast cost of a line (index `index`, zero-based) with the given ratio
-/// against the line above of spacing class `pred_fit`: only between two lines of
-/// the paragraph shape (the lines beside a drop).
+/// against the line above of spacing class `pred_fit` (exact gap `pred_gap`): only
+/// between two lines of the paragraph shape (the lines beside a drop).
 fn contrast_cost(
     metrics: &CostMetrics,
     shape: usize,
     index: usize,
     pred_fit: i8,
+    pred_gap: f64,
     ratio: f64,
 ) -> Cost {
     if metrics.contrast <= 0.0 || index == 0 || index >= shape {
         return 0.0;
     }
-    let d = (gap_log(metrics, ratio) - pred_fit as f64 * FITNESS_STEP).abs();
-    metrics.contrast * ((d - CONTRAST_FREE).max(0.0) / FITNESS_STEP)
+    let gap = gap_log(metrics, ratio);
+    let d = (gap - pred_fit as f64 * FITNESS_STEP).abs();
+    let soft = metrics.contrast * ((d - CONTRAST_FREE).max(0.0) / FITNESS_STEP);
+    // the hard step past ~1.58×, on the exact gaps
+    let e = (gap - pred_gap).abs();
+    let hard = if e > CONTRAST_HARD {
+        metrics.contrast * CONTRAST_HARD_FACTOR * (1.0 + (e - CONTRAST_HARD) / FITNESS_STEP)
+    } else {
+        0.0
+    };
+    soft + hard
 }
 
 /// Calls `f` for all possible points in the text where lines can broken.
