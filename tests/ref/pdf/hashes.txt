@@ -114,6 +114,8 @@ e4378b03c0c88a04b7bc5b0c3d9e23f9 color-saturation
 72bf371d532444341689298ed44c4353 color-spaces
 654fce76fc39360b2865c0c3f24f3f51 columns-colbreak-after-place
 73fd768e2c8e0f794893f42c43cd11ae columns-empty-second-column
+fbb756c7469b8eb95f3caac92d648f65 columns-gutter-array
+88a27e21dbe62ddf9e302155b09f4df5 columns-gutter-array-container
 3e28bbd810096e7263a90a310d2180db columns-in-auto-sized-rect
 6464b9e93f60ffca360562fb7ffc93af columns-in-fixed-size-rect
 7766b3ea11053b2468c3412897e75327 columns-more-with-gutter

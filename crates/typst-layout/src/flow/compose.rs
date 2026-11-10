@@ -520,7 +520,8 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
             } else {
                 regions.size.x - offset - width
             };
-            offset += width + self.config.columns.gutter;
+            offset += width
+                + self.config.columns.gutters.get(i).copied().unwrap_or_default();
 
             // During distribution, the baseline of the region is set to the
             // baseline of the first frame - e.g., the first paragraph line.

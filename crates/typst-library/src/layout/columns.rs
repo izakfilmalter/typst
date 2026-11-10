@@ -1,7 +1,12 @@
 use std::num::NonZeroUsize;
 
-use crate::foundations::{Content, elem};
-use crate::layout::{Length, Ratio, Rel};
+use smallvec::{SmallVec, smallvec};
+
+use crate::diag::{HintedStrResult, bail};
+use crate::foundations::{
+    Array, Content, IntoValue, Resolve, StyleChain, Value, cast, elem,
+};
+use crate::layout::{Abs, Length, Ratio, Rel};
 
 /// Separates a region into multiple equally sized columns.
 ///
@@ -65,12 +70,72 @@ pub struct ColumnsElem {
     pub count: NonZeroUsize,
 
     /// The size of the gutter space between each column.
-    #[default(Ratio::new(0.04).into())]
-    pub gutter: Rel<Length>,
+    ///
+    /// Either one size for every gutter, or an array with one size per
+    /// gutter, from the first column onwards (if the array is shorter than
+    /// the number of gutters, its last size repeats). The columns share the
+    /// width that the gutters leave equally.
+    ///
+    /// ```example
+    /// #columns(4, gutter: (4pt, 16pt, 4pt))[
+    ///   #for i in range(1, 5) [Column #i #colbreak()]
+    /// ]
+    /// ```
+    #[default(ColumnGutter(smallvec![Ratio::new(0.04).into()]))]
+    pub gutter: ColumnGutter,
 
     /// The content that should be layouted into the columns.
     #[required]
     pub body: Content,
+}
+
+/// The gutters between columns: one size for all of them, or one per gutter.
+#[derive(Debug, Clone, PartialEq, Hash)]
+pub struct ColumnGutter(pub SmallVec<[Rel<Length>; 1]>);
+
+impl Resolve for ColumnGutter {
+    type Output = ColumnGutters;
+
+    fn resolve(self, styles: StyleChain) -> Self::Output {
+        ColumnGutters(self.0.into_iter().map(|g| g.resolve(styles)).collect())
+    }
+}
+
+cast! {
+    ColumnGutter,
+    self => if self.0.len() == 1 {
+        self.0[0].into_value()
+    } else {
+        self.0.into_iter().map(IntoValue::into_value).collect::<Array>().into_value()
+    },
+    v: Rel<Length> => Self(smallvec![v]),
+    values: Array => {
+        let gutters: SmallVec<_> = values.into_iter().map(Value::cast).collect::<HintedStrResult<_>>()?;
+        if gutters.is_empty() {
+            bail!("column gutter array must not be empty");
+        }
+        Self(gutters)
+    },
+}
+
+/// Resolved column gutters (see [`ColumnGutter`]).
+#[derive(Debug, Clone, PartialEq, Hash)]
+pub struct ColumnGutters(pub SmallVec<[Rel<Abs>; 1]>);
+
+impl ColumnGutters {
+    /// One size for every gutter.
+    pub fn uniform(gutter: Rel<Abs>) -> Self {
+        Self(smallvec![gutter])
+    }
+
+    /// The size of gutter `i` (after column `i`), relative to `base`; the last
+    /// given size repeats.
+    pub fn get(&self, i: usize, base: Abs) -> Abs {
+        self.0
+            .get(i)
+            .or(self.0.last())
+            .map_or(Abs::zero(), |g| g.relative_to(base))
+    }
 }
 
 /// Forces a column break.

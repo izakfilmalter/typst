@@ -56,6 +56,23 @@ a page for a test but it does get the job done.
 #rect(width: 100%, height: 2cm, fill: eastern) #parbreak()
 #circle(fill: eastern)
 
+--- columns-gutter-array paged ---
+// Test one gutter size per gutter: the columns share what the gutters leave.
+#set page(height: 2cm, width: 7cm, columns: 4, margin: 5pt)
+#set columns(gutter: (5pt, 20pt, 5pt))
+#(conifer, eastern, conifer, eastern).map(c => rect(width: 100%, height: 1cm, fill: c)).join(colbreak())
+
+--- columns-gutter-array-container paged ---
+// Test a gutter array in a container: the last size repeats.
+#set page(height: auto, width: 7cm)
+#columns(4, gutter: (4pt, 16pt))[
+  #(conifer, eastern, conifer, eastern).map(c => rect(width: 100%, height: 1cm, fill: c)).join(colbreak())
+]
+
+--- columns-gutter-array-empty eval ---
+// Error: 22-24 column gutter array must not be empty
+#set columns(gutter: ())
+
 --- columns-set-page-colbreak-pagebreak paged ---
 // Test the `colbreak` and `pagebreak` functions.
 #set page(height: 1cm, width: 7.05cm, columns: 2)

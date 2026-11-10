@@ -21,8 +21,8 @@ use typst_library::introspection::{
     Introspector, Location, Locator, LocatorLink, SplitLocator, Tag,
 };
 use typst_library::layout::{
-    Abs, ColumnsElem, Dir, Em, Fr, Fragment, Frame, PageElem, PlacementScope, Region,
-    Regions, Rel, Size, Spacing,
+    Abs, ColumnGutters, ColumnsElem, Dir, Em, Fr, Fragment, Frame, PageElem,
+    PlacementScope, Region, Regions, Rel, Size, Spacing,
 };
 use typst_library::model::{
     FootnoteContinuation, FootnoteElem, FootnoteEntry, LineNumberingScope, ParLine,
@@ -75,7 +75,7 @@ pub fn layout_fragment(
         styles,
         regions,
         NonZeroUsize::ONE,
-        Rel::zero(),
+        ColumnGutters::uniform(Rel::zero()),
     )
 }
 
@@ -122,7 +122,7 @@ fn layout_fragment_impl(
     styles: StyleChain,
     regions: Regions,
     columns: NonZeroUsize,
-    column_gutter: Rel<Abs>,
+    column_gutter: ColumnGutters,
 ) -> SourceResult<Fragment> {
     if !regions.size.x.is_finite() && regions.expand.x {
         bail!(content.span(), "cannot expand into infinite width");
@@ -198,7 +198,7 @@ pub fn layout_flow<'a>(
     shared: StyleChain<'a>,
     mut regions: Regions,
     columns: NonZeroUsize,
-    column_gutter: Rel<Abs>,
+    column_gutter: ColumnGutters,
     mode: FlowMode,
 ) -> SourceResult<Fragment> {
     // Prepare configuration that is shared across the whole flow.
@@ -242,7 +242,7 @@ fn configuration<'x>(
     shared: StyleChain<'x>,
     regions: Regions,
     columns: NonZeroUsize,
-    column_gutter: Rel<Abs>,
+    column_gutter: ColumnGutters,
     mode: FlowMode,
 ) -> Config<'x> {
     Config {
@@ -254,10 +254,13 @@ fn configuration<'x>(
                 count = 1;
             }
 
-            let gutter = column_gutter.relative_to(regions.base().x);
-            let width = (regions.size.x - gutter * (count - 1) as f64) / count as f64;
+            let base = regions.base().x;
+            let gutters: Vec<Abs> =
+                (0..count.saturating_sub(1)).map(|i| column_gutter.get(i, base)).collect();
+            let total = gutters.iter().fold(Abs::zero(), |a, &g| a + g);
+            let width = (regions.size.x - total) / count as f64;
             let dir = shared.resolve(TextElem::dir);
-            ColumnConfig { count, width, gutter, dir }
+            ColumnConfig { count, width, gutters, dir }
         },
         footnote: FootnoteConfig {
             separator: shared
@@ -421,8 +424,8 @@ struct ColumnConfig {
     count: usize,
     /// The width of each column.
     width: Abs,
-    /// The amount of space between columns.
-    gutter: Abs,
+    /// The amount of space after each column but the last.
+    gutters: Vec<Abs>,
     /// The horizontal direction in which columns progress. Defined by
     /// `text.dir`.
     dir: Dir,
