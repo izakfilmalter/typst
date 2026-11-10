@@ -71,3 +71,13 @@ aaa bbb ccc#h(-0.1em)ddd eee
 #set text(hyphenate: true)
 aa bbb congregations#footnote[x] of the
 aa bbb congregations#h(-0.015em)#footnote[y] of the
+
+--- overhang-hanging-indent-first-line paged ---
+// A hanging indent's first line starts at the margin: its opening quotation
+// mark hangs there, as on any other line.
+#set page(width: 160pt, height: auto)
+#set text(overhang: true)
+#set par(hanging-indent: 2em, justify: false)
+“Let cares like a wild deluge come,
+
+“And storms of sorrow fall,”

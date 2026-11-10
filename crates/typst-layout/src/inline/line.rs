@@ -508,7 +508,7 @@ pub fn commit(
     // (optical margin alignment: “ ‘ ( [ at a line start). Nothing hangs into a
     // paragraph shape's indent (the room beside a drop).
     if indent.is_zero()
-        && let Some(text) = line.items.leading_text()
+        && let Some(text) = line.items.leading_text_at_margin()
         && let Some(glyph) = text.glyphs.first()
         && text.styles.get(TextElem::overhang)
         && (line.items.len() > 1 || text.glyphs.len() > 1)
@@ -747,6 +747,19 @@ impl<'a> Items<'a> {
     /// Access the first item (skipping tags), if it is text.
     pub fn leading_text(&self) -> Option<&ShapedText<'a>> {
         self.0.iter().find(|(_, item)| !item.is_tag())?.1.text()
+    }
+
+    /// The first text at the line's start margin: the first item (skipping tags
+    /// and the negative spacing a hanging indent puts before a paragraph's first
+    /// line, which starts at the margin), if it is text.
+    pub fn leading_text_at_margin(&self) -> Option<&ShapedText<'a>> {
+        self.0
+            .iter()
+            .find(|(_, item)| {
+                !item.is_tag() && !matches!(&**item, Item::Absolute(v, false) if *v < Abs::zero())
+            })?
+            .1
+            .text()
     }
 
     /// Access the first item (skipping tags) mutably, if it is text.
