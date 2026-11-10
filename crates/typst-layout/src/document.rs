@@ -69,6 +69,11 @@ impl Output for PagedDocument {
         Target::Paged
     }
 
+    fn retain_introspection(self) -> Self {
+        // The introspector is built from the pages and holds what it needs.
+        Self { pages: EcoVec::new(), info: self.info, introspector: self.introspector }
+    }
+
     fn create(
         engine: &mut Engine,
         content: &Content,

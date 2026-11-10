@@ -211,7 +211,8 @@ fn compile_impl<T: Output>(
         if lean && !history.is_empty() {
             history.clear();
         }
-        history.push(document);
+        // (lean: the next iteration only reads its introspector — drop its frames)
+        history.push(if lean { document.retain_introspection() } else { document });
     }
 
     // Promote delayed errors.

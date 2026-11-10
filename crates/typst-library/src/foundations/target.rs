@@ -27,6 +27,16 @@ pub trait Output: Any {
 
     /// Get the output's introspector.
     fn introspector(&self) -> &dyn Introspector;
+
+    /// Reduce an output that is kept only for its introspector (the previous
+    /// layout iteration's) to what the introspector needs, freeing the rest
+    /// (e.g. a paged document's frames). By default, the output is kept whole.
+    fn retain_introspection(self) -> Self
+    where
+        Self: Sized,
+    {
+        self
+    }
 }
 
 /// A trait for accepting an arbitrary kind of output as an argument.
