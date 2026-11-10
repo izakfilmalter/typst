@@ -1551,6 +1551,12 @@ impl<'a, 'b> Insertions<'a, 'b> {
         // edge, so that no separator stands above an empty lane. Full-width
         // entries are listed above all lanes, so if there are any, a single
         // separator spans the area as without lanes.
+        // Lanes stand at the foot: a lane with fewer entries than the deepest
+        // starts them (and its separator) lower, so every lane's last entry
+        // ends at the area's foot.
+        let lanes_height = self.lane_heights.iter().copied().max().unwrap_or_default();
+        let drops: Vec<Abs> = self.lane_heights.iter().map(|h| lanes_height - *h).collect();
+        let drop_of = |lane: usize| drops.get(lane).copied().unwrap_or_default();
         if let Some(frame) = self.footnote_separator {
             offset_bottom += config.footnote.clearance;
             let y = offset_bottom;
@@ -1560,8 +1566,8 @@ impl<'a, 'b> Insertions<'a, 'b> {
             {
                 output.push_frame(Point::with_y(y), frame);
             } else {
-                for (_, x, frame) in self.lane_separators {
-                    output.push_frame(Point::new(x, y), frame);
+                for (lane, x, frame) in self.lane_separators {
+                    output.push_frame(Point::new(x, y + drop_of(lane)), frame);
                 }
             }
         }
@@ -1575,7 +1581,7 @@ impl<'a, 'b> Insertions<'a, 'b> {
             output.push_frame(Point::with_y(y), frame.clone());
         }
 
-        let mut offsets = vec![offset_bottom; self.lane_heights.len()];
+        let mut offsets: Vec<Abs> = (0..self.lane_heights.len()).map(|l| offset_bottom + drop_of(l)).collect();
         for (lane, x, frame) in self.footnotes {
             let Some(lane) = lane else { continue };
             offsets[lane] += config.footnote.gap;
