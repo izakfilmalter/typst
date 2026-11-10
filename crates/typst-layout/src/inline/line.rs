@@ -684,13 +684,13 @@ fn overhang(c: char) -> f64 {
         '–' | '—' => 0.2,
         '-' | '\u{ad}' => 0.55,
 
-        // Punctuation.
-        '.' | ',' => 0.8,
+        // Punctuation (stops and commas hang almost whole).
+        '.' | ',' => 0.9,
         ':' | ';' => 0.3,
         '!' | '?' => 0.2,
 
-        // Closing quotation marks.
-        '”' | '’' | '"' | '\'' | '»' | '›' => 0.6,
+        // Closing quotation marks hang whole: the text edge stays clean.
+        '”' | '’' | '"' | '\'' | '»' | '›' => 1.0,
 
         // Arabic
         '\u{60C}' | '\u{6D4}' => 0.4,
@@ -703,8 +703,10 @@ fn overhang(c: char) -> f64 {
 /// margin (opening quotation marks and brackets).
 fn overhang_start(c: char) -> f64 {
     match c {
-        '“' | '‘' | '„' | '"' | '\'' | '«' | '‹' => 0.6,
-        '(' | '[' => 0.15,
+        // Opening quotation marks hang whole, so the first letter stands on the
+        // text edge (full hanging punctuation).
+        '“' | '‘' | '„' | '"' | '\'' | '«' | '‹' => 1.0,
+        '(' | '[' => 0.3,
         _ => 0.0,
     }
 }
