@@ -22,3 +22,17 @@
 #set align(end)
 #set text(dir: rtl)
 :
+
+--- overhang-after-metadata paged ---
+// A closing quotation mark or stop hangs even when a zero-width marker
+// (metadata) follows it before the line's trailing space: the space, trimmed
+// at the break, leaves a glyph-less text item that hanging looks past.
+#set page(width: 120pt, height: auto, margin: 10pt)
+#set par(justify: true)
+#set text(overhang: true, hyphenate: false)
+#rect(inset: 0pt, width: 100%)[
+  He said, “the end of all thereof.”#metadata(1)<m> And so it is with everything.#metadata(2)<m> Then we go on.
+]
+#rect(inset: 0pt, width: 100%)[
+  He said, “the end of all thereof.” And so it is with everything. Then we go on.
+]

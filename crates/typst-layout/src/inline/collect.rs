@@ -53,6 +53,19 @@ impl<'a> Item<'a> {
         matches!(self, Self::Tag(_))
     }
 
+    /// Whether this item neither shows nor takes room: a tag, text without
+    /// glyphs (a trailing space trimmed at a line break leaves one when a tag
+    /// separates it from the text before) or zero spacing. Hanging punctuation
+    /// looks past such items for the line's first or last glyph.
+    pub fn is_inert(&self) -> bool {
+        match self {
+            Self::Tag(_) => true,
+            Self::Text(shaped) => shaped.glyphs.is_empty(),
+            Self::Absolute(v, _) => v.is_zero(),
+            _ => false,
+        }
+    }
+
     /// If this a text item, return it.
     pub fn text(&self) -> Option<&ShapedText<'a>> {
         match self {

@@ -731,6 +731,12 @@ fn overhang_start(c: char) -> f64 {
     }
 }
 
+/// Whether a line's trailing glyph lies before this item: an inert item or a
+/// zero-width frame (a box holding only a placed mark) after the text.
+fn trailing_inert(item: &Item) -> bool {
+    item.is_inert() || matches!(item, Item::Frame(f) if f.width().is_zero())
+}
+
 /// A collection of owned or borrowed inline items.
 pub struct Items<'a>(Vec<(LogicalIndex, ItemEntry<'a>)>);
 
@@ -774,7 +780,8 @@ impl<'a> Items<'a> {
         self.0
             .iter()
             .find(|(_, item)| {
-                !item.is_tag() && !matches!(&**item, Item::Absolute(v, false) if *v < Abs::zero())
+                !item.is_inert()
+                    && !matches!(&**item, Item::Absolute(v, false) if *v < Abs::zero())
             })?
             .1
             .text()
@@ -785,14 +792,17 @@ impl<'a> Items<'a> {
         self.0.iter_mut().find(|(_, item)| !item.is_tag())?.1.text_mut()
     }
 
-    /// Access the last item (skipping tags), if it is text.
+    /// Access the last item (skipping tags and other zero-width items, such
+    /// as the glyph-less text a trimmed trailing space leaves after a tag),
+    /// if it is text.
     pub fn trailing_text(&self) -> Option<&ShapedText<'a>> {
-        self.0.iter().rev().find(|(_, item)| !item.is_tag())?.1.text()
+        self.0.iter().rev().find(|(_, item)| !trailing_inert(item))?.1.text()
     }
 
-    /// Access the last item (skipping tags) mutably, if it is text.
+    /// Access the last item (skipping tags and other zero-width items) mutably,
+    /// if it is text.
     pub fn trailing_text_mut(&mut self) -> Option<&mut ShapedText<'a>> {
-        self.0.iter_mut().rev().find(|(_, item)| !item.is_tag())?.1.text_mut()
+        self.0.iter_mut().rev().find(|(_, item)| !trailing_inert(item))?.1.text_mut()
     }
 
     /// Reorder the items starting at the given index to RTL.
