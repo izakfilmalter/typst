@@ -389,12 +389,21 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
                 })
                 .collect();
             let lift_of = |g: Abs| step * ((g / step + 1e-6).floor().max(0.0));
+            // Notes follow their own text: level separators only where the
+            // columns' text ends within a step of each other; a column whose text
+            // ends well above the other's raises its notes under its own text.
+            let own: Vec<Abs> = gaps.iter().map(|g| g.map(lift_of).unwrap_or_default()).collect();
             let lifts: Vec<Abs> = if level_notes {
-                let min = gaps.iter().flatten().copied().reduce(Abs::min);
-                let l = min.map(lift_of).unwrap_or_default();
-                gaps.iter().map(|g| if g.is_some() { l } else { Abs::zero() }).collect()
+                let lo = gaps.iter().flatten().copied().reduce(Abs::min).map(lift_of);
+                let hi = gaps.iter().flatten().copied().reduce(Abs::max).map(lift_of);
+                match (lo, hi) {
+                    (Some(lo), Some(hi)) if hi - lo <= step + Abs::pt(0.01) => {
+                        gaps.iter().map(|g| if g.is_some() { lo } else { Abs::zero() }).collect()
+                    }
+                    _ => own,
+                }
             } else {
-                gaps.iter().map(|g| g.map(lift_of).unwrap_or_default()).collect()
+                own
             };
             if lifts.iter().any(|l| *l > Abs::zero()) {
                 let flows: Vec<Abs> = self.extents.iter().map(|e| e.0).collect();
