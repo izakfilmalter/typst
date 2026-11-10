@@ -61,6 +61,7 @@ pub fn compose(
         used: Abs::zero(),
         extents: vec![],
         reserves: vec![],
+        notes_foot: None,
     }
     .page(locator, regions)
 }
@@ -124,6 +125,9 @@ pub struct Composer<'a, 'b, 'x, 'y> {
     /// each column (by index) below its bottom insertions, so that they start
     /// where the deepest column's do.
     reserves: Vec<Abs>,
+    /// In a balanced layout with `notes: "foot"`: the height each column's
+    /// frame takes, its footnote area at the foot of it (the full region).
+    notes_foot: Option<Abs>,
 }
 
 /// How many column heights balancing tries upwards from its lower bound
@@ -187,7 +191,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         };
         drop(checkpoint);
 
-        Ok(self.page_insertions.finalize(self.work, self.config, output))
+        Ok(self.page_insertions.finalize(self.work, self.config, output, None))
     }
 
     /// Balances the columns of a region whose (unbalanced) layout `normal`
@@ -255,6 +259,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
                 budget,
                 spec.level_notes,
                 step,
+                spec.notes_foot.then_some(full),
             )?;
             if trial.is_some() {
                 best = trial;
@@ -276,6 +281,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
                     budget,
                     spec.level_notes,
                     step,
+                    spec.notes_foot.then_some(full),
                 )? {
                     Some(result) => {
                         hi = mid;
@@ -292,6 +298,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         if best.is_none() && spec.level_notes {
             best = self.balance_trial(
                 &locator, pod, checkpoint, &initial, full, budget, false, step,
+                spec.notes_foot.then_some(full),
             )?;
         }
 
@@ -322,6 +329,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         budget: usize,
         level_notes: bool,
         step: Abs,
+        foot: Option<Abs>,
     ) -> SourceResult<Option<(Frame, Work<'a, 'b>)>> {
         let page_insertions = self.page_insertions.clone();
         // Level notes: each column with notes keeps free, below them, the
@@ -377,7 +385,43 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         // smallest gap), so their separators stay level. The flow keeps its
         // breaks: each column still has room for what it holds.
         let mut result = result;
-        if fits && result.is_ok() && step > Abs::zero() {
+        // Notes at the foot: the text keeps the balanced breaks, and every
+        // column's footnote area moves to the foot of the full region (the
+        // columns laid out again with the same breaks, their frames as tall
+        // as the region).
+        if let Some(foot) = foot.filter(|_| fits && result.is_ok()) {
+            let flows: Vec<Abs> = self.extents.iter().map(|e| e.0).collect();
+            let work = self.work.clone();
+            let spill = self.footnote_spill.clone();
+            let queue = self.footnote_queue.clone();
+            let frame = result.as_ref().ok().cloned();
+            *self.work = checkpoint.clone();
+            self.footnote_spill = initial.0.clone();
+            self.footnote_queue = initial.1.clone();
+            self.balance = None;
+            self.pending = 0;
+            self.used = Abs::zero();
+            self.reserves = reserves.clone();
+            self.notes_foot = Some(foot);
+            let at_foot = self.page_contents(locator.relayout(), pod, Some(height));
+            self.notes_foot = None;
+            self.reserves.clear();
+            let again = self.balance.take().is_some() && self.pending <= budget;
+            let same = self.extents.len() == flows.len()
+                && self.extents.iter().zip(&flows).all(|(e, f)| e.0.approx_eq(*f));
+            match at_foot {
+                Ok(frame) if again && same => result = Ok(frame),
+                Err(Stop::Error(err)) => return Err(err),
+                _ => {
+                    *self.work = work;
+                    self.footnote_spill = spill;
+                    self.footnote_queue = queue;
+                    if let Some(frame) = frame {
+                        result = Ok(frame);
+                    }
+                }
+            }
+        } else if fits && result.is_ok() && step > Abs::zero() {
             let gaps: Vec<Option<Abs>> = self
                 .extents
                 .iter()
@@ -614,7 +658,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
 
         let insertions = std::mem::take(&mut self.column_insertions);
         self.extents.push((insertions.top_size + self.flow_used, insertions.bottom_size));
-        let mut output = insertions.finalize(self.work, self.config, inner);
+        let mut output = insertions.finalize(self.work, self.config, inner, self.notes_foot);
 
         // Lay out per-column line numbers.
         if let Some(line_config) = &self.config.line_numbers {
@@ -1442,7 +1486,11 @@ impl<'a, 'b> Insertions<'a, 'b> {
 
     /// Produce a frame for the full region based on the `inner` frame produced
     /// by distribution or column layout.
-    fn finalize(self, work: &mut Work, config: &Config, inner: Frame) -> Frame {
+    ///
+    /// With `foot`, the frame is at least that tall and its bottom insertions
+    /// stand at its foot (a balanced column whose notes stay at the foot of
+    /// the full region).
+    fn finalize(self, work: &mut Work, config: &Config, inner: Frame, foot: Option<Abs>) -> Frame {
         work.extend_skips(&self.skips);
 
         if self.top_floats.is_empty()
@@ -1453,7 +1501,10 @@ impl<'a, 'b> Insertions<'a, 'b> {
             return inner;
         }
 
-        let size = inner.size() + Size::with_y(self.height());
+        let mut size = inner.size() + Size::with_y(self.height());
+        if let Some(foot) = foot {
+            size.y.set_max(foot);
+        }
         let separator_height = self.separator_height();
 
         let mut output = Frame::soft(size);

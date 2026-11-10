@@ -4,7 +4,7 @@ use smallvec::{SmallVec, smallvec};
 
 use crate::diag::{HintedStrResult, bail};
 use crate::foundations::{
-    Array, Content, IntoValue, Resolve, StyleChain, Value, cast, elem,
+    Array, Cast, Content, IntoValue, Resolve, StyleChain, Value, cast, elem,
 };
 use crate::layout::{Abs, Length, Ratio, Rel};
 
@@ -198,6 +198,16 @@ pub struct ColbreakElem {
 /// significance.
 /// #colbalance()
 /// ```
+/// Where a balanced page's footnotes stand, see [`ColbalanceElem::notes`].
+#[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Hash, Cast)]
+pub enum BalanceNotes {
+    /// Under the balanced text (the default).
+    #[default]
+    Raise,
+    /// At the foot of the full region.
+    Foot,
+}
+
 #[elem(title = "Column Balance")]
 pub struct ColbalanceElem {
     /// If set, the balanced column height is a whole multiple of this length,
@@ -227,4 +237,13 @@ pub struct ColbalanceElem {
     /// column's content ends above that common level.
     #[default(false)]
     pub level_notes: bool,
+
+    /// Where the balanced columns' footnotes stand. With `{"raise"}` (the
+    /// default) each column's notes follow its text, at the foot of the
+    /// balanced height (raised under the text where there is room). With
+    /// `{"foot"}` only the text is balanced: the columns break as with
+    /// `{"raise"}`, but every column's footnote area stands at the foot of the
+    /// full region, its last entry where a full page puts it.
+    #[default(BalanceNotes::Raise)]
+    pub notes: BalanceNotes,
 }

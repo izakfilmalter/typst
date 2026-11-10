@@ -12,7 +12,7 @@ use typst_library::introspection::{
     Introspector, Location, Locator, LocatorLink, SplitLocator, Tag, TagElem,
 };
 use typst_library::layout::{
-    Abs, AlignElem, Alignment, Axes, BlockElem, ColbalanceElem, ColbreakElem,
+    Abs, AlignElem, Alignment, Axes, BalanceNotes, BlockElem, ColbalanceElem, ColbreakElem,
     FixedAlignment, FlushElem, Fr, Fragment, Frame, FrameParent, Inherit, PagebreakElem,
     PlaceElem, PlacementScope, Ratio, Region, Regions, Rel, Size, Sizing, Spacing, VElem,
 };
@@ -95,7 +95,8 @@ impl<'a> Collector<'a, '_, '_> {
                 let snap = elem.snap.get(styles).map(|snap| snap.resolve(styles));
                 let offset = elem.offset.get(styles).resolve(styles);
                 let level_notes = elem.level_notes.get(styles);
-                self.output.push(Child::Balance(BalanceSpec { snap, offset, level_notes }));
+                let notes_foot = elem.notes.get(styles) == BalanceNotes::Foot;
+                self.output.push(Child::Balance(BalanceSpec { snap, offset, level_notes, notes_foot }));
             } else if child.is::<PagebreakElem>() {
                 bail!(
                     child.span(), "pagebreaks are not allowed inside of containers";
@@ -382,6 +383,8 @@ pub struct BalanceSpec {
     pub offset: Abs,
     /// Whether the columns' footnote areas start level.
     pub level_notes: bool,
+    /// Whether the footnote areas stand at the foot of the full region.
+    pub notes_foot: bool,
 }
 
 /// A child that encapsulates a layouted line of a paragraph.
