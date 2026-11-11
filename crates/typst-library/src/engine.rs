@@ -70,10 +70,12 @@ impl Engine<'_> {
         // using `par_bridge` because it does not retain the ordering.
         let work: Vec<T> = iter.into_iter().collect();
 
-        // Work in parallel.
+        // Work in parallel (fork: in the caller's memoization frame, so that what the
+        // workers compute counts as part of what the caller computes).
+        let frame = comemo::frame();
         let mut pairs: Vec<(U, Sink)> = Vec::with_capacity(work.len());
         work.into_par_iter()
-            .map(|value| {
+            .map(|value| comemo::in_frame(frame.clone(), || {
                 let mut sink = Sink::new();
                 let mut engine = Engine {
                     world,
@@ -84,7 +86,7 @@ impl Engine<'_> {
                     library,
                 };
                 (f(&mut engine, value), sink)
-            })
+            }))
             .collect_into_vec(&mut pairs);
 
         // Apply the subsinks to the outer sink.
@@ -99,6 +101,64 @@ impl Engine<'_> {
         }
 
         pairs.into_iter().map(|(output, _)| output)
+    }
+
+    /// (fork) `parallelize`, starting the costliest items first (by `cost`, a guess): a
+    /// long item started last would run alone at the end. The outputs come back, and the
+    /// workers' sinks are applied, in the items' order, as with `parallelize`.
+    pub fn parallelize_by_cost<T, U, C, F>(
+        &mut self,
+        work: Vec<T>,
+        cost: C,
+        f: F,
+    ) -> impl Iterator<Item = U> + use<T, U, C, F>
+    where
+        C: Fn(&T) -> usize,
+        T: Send,
+        U: Send,
+        F: Fn(&mut Engine, T) -> U + Send + Sync,
+    {
+        let Engine {
+            world, introspector, traced, ref route, library, ..
+        } = *self;
+
+        let mut order: Vec<usize> = (0..work.len()).collect();
+        order.sort_by_key(|&i| std::cmp::Reverse(cost(&work[i])));
+        let mut slots: Vec<Option<T>> = work.into_iter().map(Some).collect();
+        let sorted: Vec<(usize, T)> =
+            order.iter().map(|&i| (i, slots[i].take().unwrap())).collect();
+
+        let frame = comemo::frame();
+        let mut done: Vec<(usize, U, Sink)> = Vec::with_capacity(sorted.len());
+        sorted
+            .into_par_iter()
+            .with_max_len(1)
+            .map(|(i, value)| comemo::in_frame(frame.clone(), || {
+                let mut sink = Sink::new();
+                let mut engine = Engine {
+                    world,
+                    introspector,
+                    traced,
+                    sink: sink.track_mut(),
+                    route: route.clone(),
+                    library,
+                };
+                (i, f(&mut engine, value), sink)
+            }))
+            .collect_into_vec(&mut done);
+        done.sort_by_key(|(i, _, _)| *i);
+
+        for (_, _, sink) in &mut done {
+            let sink = std::mem::take(sink);
+            self.sink.extend(
+                sink.introspections,
+                sink.delayed,
+                sink.warnings,
+                sink.values,
+            );
+        }
+
+        done.into_iter().map(|(_, output, _)| output)
     }
 
     /// Performs an introspection on the introspector and returns its result.

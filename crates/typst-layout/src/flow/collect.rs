@@ -26,6 +26,13 @@ use super::{FlowMode, layout_multi_block, layout_single_block};
 use crate::inline::ParSituation;
 use crate::modifiers::layout_and_modify;
 
+/// (fork) Whether a flow's paragraphs are laid out in parallel (`TYPST_PARALLEL_PARS=0`
+/// turns it off). The lines are the same either way.
+fn parallel_pars() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("TYPST_PARALLEL_PARS").map_or(true, |v| v != "0"))
+}
+
 /// Collects all elements of the flow into prepared children. These are much
 /// simpler to handle than the raw elements.
 #[typst_macros::time]
@@ -48,6 +55,7 @@ pub fn collect<'a>(
         expand,
         output: Vec::with_capacity(children.len()),
         par_situation: ParSituation::First,
+        pending: Vec::new(),
     }
     .run(mode)
 }
@@ -62,6 +70,17 @@ struct Collector<'a, 'x, 'y> {
     locator: SplitLocator<'a>,
     output: Vec<Child<'a>>,
     par_situation: ParSituation,
+    /// (fork) paragraphs whose lines are laid out after the sweep, in parallel: where
+    /// their children go in `output`, and the paragraph
+    pending: Vec<(usize, PendingPar<'a>)>,
+}
+
+/// (fork) A paragraph to lay out: everything `layout_par` takes, fixed in the sweep.
+struct PendingPar<'a> {
+    elem: &'a Packed<ParElem>,
+    styles: StyleChain<'a>,
+    locator: Locator<'a>,
+    situation: ParSituation,
 }
 
 impl<'a> Collector<'a, '_, '_> {
@@ -111,7 +130,66 @@ impl<'a> Collector<'a, '_, '_> {
             }
         }
 
+        self.finish_pars()?;
         Ok(self.output)
+    }
+
+    /// (fork) Lay out the paragraphs the sweep set aside, several at once (each paragraph's
+    /// lines depend only on what the sweep fixed: its locator, situation and the base
+    /// size; the results and their sinks come back in order), and put their children in
+    /// place.
+    fn finish_pars(&mut self) -> SourceResult<()> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        let pending = std::mem::take(&mut self.pending);
+        let (base, expand) = (self.base, self.expand);
+        let layouts: Vec<SourceResult<Fragment>> = if pending.len() == 1 || !parallel_pars() {
+            pending
+                .iter()
+                .map(|(_, p)| {
+                    crate::inline::layout_par(
+                        p.elem,
+                        self.engine,
+                        p.locator.relayout(),
+                        p.styles,
+                        base,
+                        expand,
+                        p.situation,
+                    )
+                })
+                .collect()
+        } else {
+            self.engine
+                .parallelize(pending.iter().map(|(_, p)| p), |engine, p| {
+                    crate::inline::layout_par(
+                        p.elem,
+                        engine,
+                        p.locator.relayout(),
+                        p.styles,
+                        base,
+                        expand,
+                        p.situation,
+                    )
+                })
+                .collect()
+        };
+        // (from the back, so that the indices before stay valid)
+        let mut parts = Vec::with_capacity(pending.len());
+        for ((at, p), layout) in pending.into_iter().zip(layouts) {
+            let lines = layout?.into_frames();
+            let spacing = p.elem.spacing.resolve(p.styles);
+            let leading = p.elem.leading.resolve(p.styles);
+            let mut out = Vec::with_capacity(2 * lines.len() + 2);
+            out.push(Child::Rel(spacing.into(), 4));
+            self.lines_into(&mut out, lines, leading, p.styles);
+            out.push(Child::Rel(spacing.into(), 4));
+            parts.push((at, out));
+        }
+        for (at, out) in parts.into_iter().rev() {
+            self.output.splice(at..at, out);
+        }
+        Ok(())
     }
 
     /// Perform collection for inline-level children.
@@ -167,10 +245,18 @@ impl<'a> Collector<'a, '_, '_> {
         elem: &'a Packed<ParElem>,
         styles: StyleChain<'a>,
     ) -> SourceResult<()> {
+        if parallel_pars() {
+            // (fork) set aside: laid out after the sweep, with the others (`finish_pars`)
+            let locator = self.locator.next_elem(&elem.span(), elem);
+            let situation = self.par_situation;
+            self.pending.push((self.output.len(), PendingPar { elem, styles, locator, situation }));
+            self.par_situation = ParSituation::Consecutive;
+            return Ok(());
+        }
         let lines = crate::inline::layout_par(
             elem,
             self.engine,
-            self.locator.next(&elem.span()),
+            self.locator.next_elem(&elem.span(), elem),
             styles,
             self.base,
             self.expand,
@@ -193,6 +279,19 @@ impl<'a> Collector<'a, '_, '_> {
 
     /// Collect laid-out lines.
     fn lines(&mut self, lines: Vec<Frame>, leading: Abs, styles: StyleChain<'a>) {
+        let mut out = std::mem::take(&mut self.output);
+        self.lines_into(&mut out, lines, leading, styles);
+        self.output = out;
+    }
+
+    /// Collect laid-out lines into `output`.
+    fn lines_into(
+        &self,
+        output: &mut Vec<Child<'a>>,
+        lines: Vec<Frame>,
+        leading: Abs,
+        styles: StyleChain<'a>,
+    ) {
         let align = styles.resolve(AlignElem::alignment);
         let costs = styles.get(TextElem::costs);
 
@@ -214,7 +313,7 @@ impl<'a> Collector<'a, '_, '_> {
 
         for (i, frame) in lines.into_iter().enumerate() {
             if i > 0 {
-                self.output.push(Child::Rel(leading.into(), 5));
+                output.push(Child::Rel(leading.into(), 5));
             }
 
             // To prevent widows and orphans, we require enough space for
@@ -231,7 +330,7 @@ impl<'a> Collector<'a, '_, '_> {
                 frame.height()
             };
 
-            self.output
+            output
                 .push(Child::Line(self.boxed(LineChild { frame, align, need })));
         }
     }
@@ -239,7 +338,7 @@ impl<'a> Collector<'a, '_, '_> {
     /// Collect a block into a [`SingleChild`] or [`MultiChild`] depending on
     /// whether it is breakable.
     fn block(&mut self, elem: &'a Packed<BlockElem>, styles: StyleChain<'a>) {
-        let locator = self.locator.next(&elem.span());
+        let locator = self.locator.next_elem(&elem.span(), elem);
         let align = styles.resolve(AlignElem::alignment);
         let alone = self.children.len() == 1;
         let sticky = elem.sticky.get(styles);
@@ -320,7 +419,7 @@ impl<'a> Collector<'a, '_, '_> {
             );
         }
 
-        let locator = self.locator.next(&elem.span());
+        let locator = self.locator.next_elem(&elem.span(), elem);
         let clearance = elem.clearance.resolve(styles);
         let delta = Axes::new(elem.dx.get(styles), elem.dy.get(styles)).resolve(styles);
         self.output.push(Child::Placed(self.boxed(PlacedChild {

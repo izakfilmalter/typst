@@ -182,13 +182,18 @@ fn layout_pages<'a>(
     let items = collect(children, locator, styles);
 
     // Layout the page runs in parallel.
-    let mut runs = engine.parallelize(
-        items.iter().filter_map(|item| match item {
-            Item::Run(children, initial, locator) => {
-                Some((children, initial, locator.relayout()))
-            }
-            _ => None,
-        }),
+    // (fork: the longest runs first, by their number of children)
+    let mut runs = engine.parallelize_by_cost(
+        items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Run(children, initial, locator) => {
+                    Some((children, initial, locator.relayout()))
+                }
+                _ => None,
+            })
+            .collect(),
+        |(children, _, _)| children.len(),
         |engine, (children, initial, locator)| {
             layout_page_run(engine, children, locator, *initial)
         },
