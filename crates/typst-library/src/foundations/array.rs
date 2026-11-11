@@ -942,27 +942,29 @@ impl Array {
         // https://github.com/typst/typst/issues/6285).
         match by {
             Some(by) => {
-                let mut are_in_order = |mut x, mut y| {
-                    if let Some(f) = &key {
-                        // We rely on `comemo`'s memoization of function
-                        // evaluation to not excessively reevaluate the key.
-                        x = f.call(engine, context, [x])?;
-                        y = f.call(engine, context, [y])?;
-                    }
-                    match by.call(engine, context, [x, y])? {
-                        Value::Bool(b) => Ok(b),
-                        x => {
-                            bail!(
-                                span,
-                                "expected boolean from `by` function, got {}",
-                                x.ty(),
-                            )
-                        }
+                // (fork) each element's key once, before sorting: upstream relied on
+                // comemo's memoization of closure calls to not reevaluate the key at every
+                // comparison, and the fork does not memoize small closures (see
+                // `eval_closure`). The keys are the same values, so the comparisons and
+                // the order are too.
+                let items: EcoVec<Value> = match &key {
+                    Some(f) if self.0.len() >= 2 => self
+                        .0
+                        .iter()
+                        .map(|x| f.call(engine, context, [x.clone()]))
+                        .collect::<SourceResult<_>>()?,
+                    _ => self.0.clone(),
+                };
+                let originals = self.0;
+                let mut are_in_order = |x, y| match by.call(engine, context, [x, y])? {
+                    Value::Bool(b) => Ok(b),
+                    x => {
+                        bail!(span, "expected boolean from `by` function, got {}", x.ty(),)
                     }
                 };
 
                 let mut result = Ok(());
-                let mut vec = self.0.into_iter().enumerate().collect::<Vec<_>>();
+                let mut vec = items.into_iter().enumerate().collect::<Vec<_>>();
                 glidesort::sort_by(&mut vec, |(i, x), (j, y)| {
                     // Because we use booleans for the comparison function, in
                     // order to keep the sort stable, we need to compare in the
@@ -1005,10 +1007,38 @@ impl Array {
                         }
                     }
                 });
-                result.map(|()| vec.into_iter().map(|(_, x)| x).collect())
+                result.map(|()| {
+                    vec.into_iter().map(|(i, _)| originals[i].clone()).collect()
+                })
             }
 
             None => {
+                // (fork) each element's key once, before sorting (see above)
+                if let Some(f) = &key
+                    && self.0.len() >= 2
+                {
+                    let keys = self
+                        .0
+                        .iter()
+                        .map(|x| f.call(engine, context, [x.clone()]))
+                        .collect::<SourceResult<Vec<Value>>>()?;
+                    let mut pairs = keys.into_iter().zip(self.0).collect::<Vec<_>>();
+                    let mut result = Ok(());
+                    glidesort::sort_by(&mut pairs, |(a, _), (b, _)| {
+                        ops::compare(a, b).unwrap_or_else(|err| {
+                            if result.is_ok() {
+                                result = Err(HintedString::from(err).with_hint(
+                                    "consider defining the comparison with `by` \
+                                     or choosing a different `key`",
+                                ))
+                                .at(span);
+                            }
+                            Ordering::Equal
+                        })
+                    });
+                    return result.map(|()| pairs.into_iter().map(|(_, x)| x).collect());
+                }
+
                 let mut key_of = |x: Value| match &key {
                     // We rely on `comemo`'s memoization of function evaluation
                     // to not excessively reevaluate the key.
