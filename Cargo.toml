@@ -178,3 +178,8 @@ wildcard_in_or_patterns = "allow"
 # See https://github.com/typst/typst/pull/6560#issuecomment-3045393640
 derived_hash_with_manual_eq = "allow"
 disallowed_methods = "warn"
+
+# (fork) comemo with named caches, stats and nesting: vendor/README.md
+[patch.crates-io]
+comemo = { path = "vendor/comemo" }
+comemo-macros = { path = "vendor/comemo-macros" }
