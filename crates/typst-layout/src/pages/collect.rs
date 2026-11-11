@@ -40,13 +40,13 @@ pub fn collect<'a>(
             // a staged empty page.
             let strong = !pagebreak.weak.get(styles);
             if strong && staged_empty_page {
-                let locator = locator.next(&elem.span());
+                let locator = locator.next_elem(&elem.span(), elem);
                 items.push(Item::Run(&[], initial, locator));
             }
 
             // Add an instruction to adjust the page parity if requested.
             if let Some(parity) = pagebreak.to.get(styles) {
-                let locator = locator.next(&elem.span());
+                let locator = locator.next_elem(&elem.span(), elem);
                 items.push(Item::Parity(parity, styles, locator));
             }
 
@@ -102,7 +102,7 @@ pub fn collect<'a>(
 
             // Record a page run and then disregard a staged empty page because
             // we have real content now.
-            let locator = locator.next(&elem.span());
+            let locator = locator.next_elem(&elem.span(), elem);
             items.push(Item::Run(group, initial, locator));
             staged_empty_page = false;
         }

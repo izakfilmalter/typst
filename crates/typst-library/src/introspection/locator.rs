@@ -264,6 +264,17 @@ impl<'a> SplitLocator<'a> {
         self.next_inner(typst_utils::hash128(key))
     }
 
+    /// (fork) `next` for an element: keyed by its span, or, with
+    /// `TYPST_LOCATOR_KEY=content`, by its span and its content's hash, so that an element
+    /// keeps its locator when elements of the same span come or go before it.
+    pub fn next_elem<E: Hash>(&mut self, span: &typst_syntax::Span, elem: &E) -> Locator<'a> {
+        if locator_by_content() {
+            self.next_inner(typst_utils::hash128(&(span, elem)))
+        } else {
+            self.next_inner(typst_utils::hash128(span))
+        }
+    }
+
     /// Produces a sublocator for a subtree.
     pub fn next_inner(&mut self, key: u128) -> Locator<'a> {
         // Produce a locator disambiguator, for elements with the same key
@@ -392,4 +403,10 @@ impl<'a> LocatorLink<'a> {
             LinkKind::Measure(base, span) => Resolved::Measure(base, span),
         })
     }
+}
+
+/// (fork) `TYPST_LOCATOR_KEY=content`: see `SplitLocator::next_elem`.
+pub fn locator_by_content() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("TYPST_LOCATOR_KEY").is_ok_and(|v| v == "content"))
 }
