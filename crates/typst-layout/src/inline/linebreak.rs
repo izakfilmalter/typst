@@ -304,14 +304,65 @@ fn linebreak_optimized_at<'a>(
     // the search space in our proper optimization pass below.
     // (with a looseness the approximate layout's cost bounds nothing: the paragraph
     // asked for is another length)
-    let upper_bound = if p.config.looseness != 0 {
+    let loose = p.config.looseness != 0;
+    if loose
+        && loose_bound()
+        && let Some(found) = linebreak_loose_bounded(engine, p, width, metrics)
+    {
+        return found;
+    }
+    let upper_bound = if loose {
         Cost::INFINITY
     } else {
         linebreak_optimized_approximate(engine, p, width, metrics)
     };
 
     // Using the upper bound, perform exact optimized linebreaking.
-    linebreak_optimized_bounded(engine, p, width, metrics, upper_bound)
+    let (lines, cost, _, _) =
+        linebreak_optimized_bounded(engine, p, width, metrics, upper_bound, loose);
+    (lines, cost)
+}
+
+/// (fork) Whether a looseness is searched with a bound (`TYPST_LOOSE_BOUND=0`: without, as
+/// before). The lines are the same either way.
+fn loose_bound() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("TYPST_LOOSE_BOUND").map_or(true, |v| v != "0"))
+}
+
+/// (fork) Optimized line breaking with a looseness, bounded. The search for a paragraph
+/// `looseness` lines longer or shorter keeps the best layout per line count at every
+/// breakpoint; without a bound it builds every line the text allows, for every count (a
+/// paragraph set a line longer cost ~20× one set at its best). Its answer is the cheapest
+/// layout with the wanted count (the best layout's count plus the looseness): the exact
+/// cost of any layout with that count bounds it, and every entry on its path costs no
+/// more. So: the best layout's count (the usual bounded search), a layout with the
+/// wanted count from the approximate search, its exact cost as the bound. When the
+/// bounded search does not land on that count, or no such layout is found: `None`, and
+/// the caller searches without a bound.
+fn linebreak_loose_bounded<'a>(
+    engine: &Engine,
+    p: &'a Preparation<'a>,
+    width: Abs,
+    metrics: &CostMetrics,
+) -> Option<(Vec<Line<'a>>, Cost)> {
+    let natural_bound = linebreak_optimized_approximate(engine, p, width, metrics);
+    let (natural, _, _, _) =
+        linebreak_optimized_bounded(engine, p, width, metrics, natural_bound, false);
+    let n0 = natural.len();
+    drop(natural);
+    let want = n0 as i64 + p.config.looseness;
+    if want < 1 {
+        return None;
+    }
+    let bound = linebreak_approximate_count(engine, p, width, metrics, want as usize);
+    if !bound.is_finite() {
+        return None;
+    }
+    let (lines, cost, best_count, count) =
+        linebreak_optimized_bounded(engine, p, width, metrics, bound, true);
+    (best_count == n0 && count == want as usize && lines.len() == count)
+        .then_some((lines, cost))
 }
 
 /// Performs line breaking in optimized Knuth-Plass style, but with an upper
@@ -323,7 +374,8 @@ fn linebreak_optimized_bounded<'a>(
     width: Abs,
     metrics: &CostMetrics,
     upper_bound: Cost,
-) -> (Vec<Line<'a>>, Cost) {
+    loose: bool,
+) -> (Vec<Line<'a>>, Cost, usize, usize) {
     /// An entry in the dynamic programming table for inline layout optimization.
     struct Entry<'a> {
         pred: usize,
@@ -345,7 +397,6 @@ fn linebreak_optimized_bounded<'a>(
     }
 
     let shape = p.config.hang.0;
-    let loose = p.config.looseness != 0;
 
     // Dynamic programming table.
     let mut table = vec![Entry {
@@ -478,6 +529,8 @@ fn linebreak_optimized_bounded<'a>(
         r.min_by(|&a, &b| table[a].total.total_cmp(&table[b].total))
     };
     let mut idx = cheapest(&mut finals.clone()).unwrap_or(table.len() - 1);
+    // (fork: the best layout's line count, and the chosen one's)
+    let best_count = table.get(idx).map_or(0, |e| e.count);
     if loose && idx < table.len() {
         let want = table[idx].count as i64 + p.config.looseness;
         let near = finals
@@ -499,10 +552,11 @@ fn linebreak_optimized_bounded<'a>(
         panic!("bounded inline layout is incomplete");
 
         #[cfg(not(debug_assertions))]
-        return linebreak_optimized_bounded(engine, p, width, metrics, Cost::INFINITY);
+        return linebreak_optimized_bounded(engine, p, width, metrics, Cost::INFINITY, loose);
     }
 
     let total = table[idx].total;
+    let count = table[idx].count;
     while idx != 0 {
         table.truncate(idx + 1);
         let entry = table.pop().unwrap();
@@ -511,7 +565,7 @@ fn linebreak_optimized_bounded<'a>(
     }
 
     lines.reverse();
-    (lines, total)
+    (lines, total, best_count, count)
 }
 
 /// Runs the normal Knuth-Plass algorithm, but instead of building proper lines
@@ -643,6 +697,194 @@ fn linebreak_optimized_approximate(
     let mut idx = (last_start..table.len())
         .min_by(|&a, &b| table[a].total.total_cmp(&table[b].total))
         .unwrap_or(table.len() - 1);
+    while idx != 0 {
+        indices.push(idx);
+        idx = table[idx].pred;
+    }
+
+    let mut pred = Line::empty();
+    let mut start = 0;
+    let mut exact = 0.0;
+
+    // The cost that we optimized was only an approximate cost, so the layout we
+    // got here is only likely to be good, not guaranteed to be the best. We now
+    // computes its exact cost as that gives us a sound upper bound for the
+    // proper optimization pass.
+    let mut pred_fit = 0;
+    let mut pred_gap = 0.0;
+    for (n, idx) in indices.into_iter().rev().enumerate() {
+        let Entry { end, breakpoint, unbreakable, .. } = table[idx];
+
+        let attempt = line(engine, p, start..end, breakpoint, Some(&pred));
+        let (ratio, line_cost) = ratio_and_cost(
+            p,
+            metrics,
+            width - p.config.hang_at(n),
+            &pred,
+            &attempt,
+            breakpoint,
+            unbreakable,
+        );
+        let line_cost = line_cost
+            + contrast_cost(metrics, p.config.hang.0, n.min(p.config.hang.0), pred_fit, pred_gap, ratio);
+        pred_fit = fitness(metrics, ratio);
+        pred_gap = gap_log(metrics, ratio);
+
+        // If approximation produces a valid layout without too much shrinking,
+        // exact layout is guaranteed to find the same layout. If, however, the
+        // line is overfull, we do not have this guarantee. Then, our bound
+        // becomes useless and actively harmful (it could be lower than what
+        // optimal layout produces). Thus, we immediately bail with an infinite
+        // bound in this case.
+        if ratio < metrics.min_ratio {
+            return Cost::INFINITY;
+        }
+
+        pred = attempt;
+        start = end;
+        exact += line_cost;
+    }
+
+    exact
+}
+
+/// (fork) `linebreak_optimized_approximate` for a layout of exactly `target` lines: the
+/// exact cost of the cheapest such layout by the approximate costs, a bound on the best
+/// layout of that many lines (infinite if the approximation finds none, or one with an
+/// overfull line). See `linebreak_loose_bounded`.
+#[typst_macros::time]
+fn linebreak_approximate_count(
+    engine: &Engine,
+    p: &Preparation,
+    width: Abs,
+    metrics: &CostMetrics,
+    target: usize,
+) -> Cost {
+    // Determine the cumulative estimation metrics.
+    let estimates = Estimates::compute(p);
+
+    /// An entry in the dynamic programming table for inline layout optimization.
+    struct Entry {
+        pred: usize,
+        total: Cost,
+        end: usize,
+        unbreakable: bool,
+        breakpoint: Breakpoint,
+        /// As in `linebreak_optimized_bounded`.
+        class: usize,
+        /// Lines up to and including this one.
+        count: usize,
+    }
+
+    let shape = p.config.hang.0;
+
+    // Dynamic programming table.
+    let mut table = vec![Entry {
+        pred: 0,
+        total: 0.0,
+        end: 0,
+        unbreakable: false,
+        breakpoint: Breakpoint::Mandatory,
+        class: 0,
+        count: 0,
+    }];
+
+    let mut active = 0;
+    let mut prev_end = 0;
+    let mut last_start = 0;
+
+    breakpoints(p, |end, breakpoint| {
+        // Find the optimal predecessor (per class).
+        let mut best: std::collections::BTreeMap<(usize, usize), Entry> =
+            std::collections::BTreeMap::new();
+        for (pred_index, pred) in table.iter().enumerate().skip(active) {
+            let start = pred.end;
+            let unbreakable = prev_end == start;
+
+            // Whether the line is justified. This is not 100% accurate w.r.t
+            // to line()'s behaviour, but good enough.
+            let justify = p.config.justify && breakpoint != Breakpoint::Mandatory;
+
+            // We don't really know whether the line naturally ends with a dash
+            // here, so we can miss that case, but it's ok, since all of this
+            // just an estimate.
+            let consecutive_dash = pred.breakpoint.is_hyphen() && breakpoint.is_hyphen();
+
+            // Estimate how much the line's spaces would need to be stretched to
+            // make it the desired width. We trim at the end to not take into
+            // account trailing spaces. This is, again, only an approximation of
+            // the real behaviour of `line`.
+            let trimmed_end = start + p.text[start..end].trim_end().len();
+            let line_ratio = raw_ratio(
+                p,
+                width - p.config.hang_at(pred.class),
+                estimates.widths.estimate(start..trimmed_end)
+                    + if breakpoint.is_hyphen() {
+                        metrics.approx_hyphen_width
+                    } else {
+                        Abs::zero()
+                    },
+                estimates.stretchability.estimate(start..trimmed_end),
+                estimates.shrinkability.estimate(start..trimmed_end),
+                estimates.justifiables.estimate(start..trimmed_end),
+            );
+
+            // Determine the line's cost.
+            let line_cost = raw_cost(
+                metrics,
+                breakpoint,
+                line_ratio,
+                justify,
+                unbreakable,
+                consecutive_dash,
+                true,
+            );
+
+            // Adjust the set of active breakpoints.
+            // See `linebreak_optimized` for details.
+            if line_ratio < metrics.min_ratio && active == pred_index {
+                active += 1;
+            }
+
+            // The total cost of this line and its chain of predecessors.
+            let total = pred.total + line_cost;
+
+            // If this attempt is better than what we had before, take it!
+            let class = (pred.class + 1).min(shape);
+            let count = pred.count + 1;
+            // (no layout of more lines than the target can end at it)
+            if count <= target && best.get(&(count, class)).is_none_or(|best| best.total >= total) {
+                best.insert((count, class), Entry {
+                    pred: pred_index,
+                    total,
+                    end,
+                    unbreakable,
+                    breakpoint,
+                    class,
+                    count,
+                });
+            }
+        }
+
+        // If this is a mandatory break, all breakpoints before this one become
+        // inactive.
+        if breakpoint == Breakpoint::Mandatory {
+            active = table.len();
+        }
+
+        last_start = table.len();
+        table.extend(best.into_values());
+        prev_end = end;
+    });
+
+    // Retrace the cheapest path of the target's line count (none: no bound).
+    let mut indices = Vec::with_capacity(16);
+    let Some(mut idx) = (last_start..table.len())
+        .filter(|&i| table[i].count == target && table[i].end == p.text.len())
+        .min_by(|&a, &b| table[a].total.total_cmp(&table[b].total))
+    else {
+        return Cost::INFINITY;
+    };
     while idx != 0 {
         indices.push(idx);
         idx = table[idx].pred;
