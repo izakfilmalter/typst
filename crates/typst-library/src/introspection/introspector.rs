@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::hash::Hash;
 use std::num::NonZeroUsize;
 use std::ops::Range;
-use std::sync::RwLock;
+use std::sync::{Arc, OnceLock, RwLock};
 
 use comemo::{Track, Tracked};
 use ecow::{EcoString, EcoVec};
@@ -66,6 +66,14 @@ pub trait Introspector: Send + Sync {
 
     /// Returns the position for the given location.
     fn position(&self, location: Location) -> Option<DocumentPosition>;
+
+    /// (fork) The matches of a query with each match's page: one tracked call where
+    /// `query` and a `page` call per match would record one per match. Its hash covers the
+    /// matches and their pages, so it validates exactly when those calls would.
+    fn query_pages(&self, selector: &Selector) -> LocatedPages;
+
+    /// (fork) The matches of a query with each match's position (see `query_pages`).
+    fn query_positions(&self, selector: &Selector) -> LocatedPositions;
 
     /// Returns the page numbering for the given location, if any.
     fn page_numbering(&self, location: Location) -> Option<&Numbering>;
@@ -140,6 +148,14 @@ impl Introspector for EmptyIntrospector {
 
     fn position(&self, _: Location) -> Option<DocumentPosition> {
         None
+    }
+
+    fn query_pages(&self, selector: &Selector) -> LocatedPages {
+        LocatedPages(Located::new(self.query(selector), |_| None, |_| None))
+    }
+
+    fn query_positions(&self, selector: &Selector) -> LocatedPositions {
+        LocatedPositions(Located::new(self.query(selector), |_| None, |_| None))
     }
 
     fn page_numbering(&self, _: Location) -> Option<&Numbering> {
@@ -699,5 +715,105 @@ impl QueryCache {
 impl Clone for QueryCache {
     fn clone(&self) -> Self {
         Self(RwLock::new(self.0.read().unwrap().clone()))
+    }
+}
+
+/// (fork) The matches of a query and where each one is (`query-pages`, `query-positions`):
+/// a document-wide index read with one tracked call instead of one per match. A template
+/// that indexes 12 000 line markers this way records one call where it recorded 12 000, and
+/// each reuse of a memoized result that read it validates one call instead of 12 000.
+#[derive(Clone)]
+pub struct Located(Arc<LocatedRepr>);
+
+struct LocatedRepr {
+    elems: EcoVec<Content>,
+    pages: Vec<Option<NonZeroUsize>>,
+    positions: Vec<Option<DocumentPosition>>,
+    hash_pages: OnceLock<u128>,
+    hash_positions: OnceLock<u128>,
+}
+
+impl Located {
+    /// The matches `elems` with their pages and positions.
+    pub fn new(
+        elems: EcoVec<Content>,
+        page: impl Fn(Location) -> Option<NonZeroUsize>,
+        position: impl Fn(Location) -> Option<DocumentPosition>,
+    ) -> Self {
+        let locs = elems.iter().map(|e| e.location());
+        let pages = locs.clone().map(|l| l.and_then(&page)).collect();
+        let positions = locs.map(|l| l.and_then(&position)).collect();
+        Self(Arc::new(LocatedRepr {
+            elems,
+            pages,
+            positions,
+            hash_pages: OnceLock::new(),
+            hash_positions: OnceLock::new(),
+        }))
+    }
+
+    /// The matches.
+    pub fn elems(&self) -> &EcoVec<Content> {
+        &self.0.elems
+    }
+
+    /// Each match's page (as `Introspector::page`).
+    pub fn pages(&self) -> &[Option<NonZeroUsize>] {
+        &self.0.pages
+    }
+
+    /// Each match's position (as `Introspector::position`).
+    pub fn positions(&self) -> &[Option<DocumentPosition>] {
+        &self.0.positions
+    }
+}
+
+/// (fork) A cache of `Located` results per selector hash, for an introspector.
+#[derive(Default)]
+pub struct LocatedCache(RwLock<FxHashMap<u128, Located>>);
+
+impl LocatedCache {
+    /// The cached result for `selector`, or `f()`'s, cached.
+    pub fn get_or(&self, selector: &Selector, f: impl FnOnce() -> Located) -> Located {
+        let hash = typst_utils::hash128(selector);
+        if let Some(l) = self.0.read().unwrap().get(&hash) {
+            return l.clone();
+        }
+        let l = f();
+        self.0.write().unwrap().entry(hash).or_insert(l).clone()
+    }
+}
+
+impl Clone for LocatedCache {
+    fn clone(&self) -> Self {
+        Self(RwLock::new(self.0.read().unwrap().clone()))
+    }
+}
+
+/// (fork) `Located`, hashed by its matches and their pages.
+#[derive(Clone)]
+pub struct LocatedPages(pub Located);
+
+impl Hash for LocatedPages {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        let r = &self.0.0;
+        state.write_u128(
+            *r.hash_pages
+                .get_or_init(|| typst_utils::hash128(&(&r.elems, &r.pages))),
+        );
+    }
+}
+
+/// (fork) `Located`, hashed by its matches and their positions.
+#[derive(Clone)]
+pub struct LocatedPositions(pub Located);
+
+impl Hash for LocatedPositions {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        let r = &self.0.0;
+        state.write_u128(
+            *r.hash_positions
+                .get_or_init(|| typst_utils::hash128(&(&r.elems, &r.positions))),
+        );
     }
 }

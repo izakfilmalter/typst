@@ -121,6 +121,20 @@ impl Introspector for BundleIntrospector {
         self.child(location)?.position(location)
     }
 
+    fn query_pages(
+        &self,
+        selector: &Selector,
+    ) -> typst_library::introspection::LocatedPages {
+        typst_library::introspection::LocatedPages(self.located(selector))
+    }
+
+    fn query_positions(
+        &self,
+        selector: &Selector,
+    ) -> typst_library::introspection::LocatedPositions {
+        typst_library::introspection::LocatedPositions(self.located(selector))
+    }
+
     fn page_numbering(&self, location: Location) -> Option<&Numbering> {
         self.child(location)?.page_numbering(location)
     }
@@ -247,5 +261,16 @@ impl BundleIntrospectorBuilder {
             }
         };
         self.subdocuments.push((path.clone(), subintrospector, loc));
+    }
+}
+
+impl BundleIntrospector {
+    /// (fork) A query's matches with their pages and positions.
+    fn located(&self, selector: &Selector) -> typst_library::introspection::Located {
+        typst_library::introspection::Located::new(
+            Introspector::query(self, selector),
+            |l| Introspector::page(self, l),
+            |l| Introspector::position(self, l),
+        )
     }
 }

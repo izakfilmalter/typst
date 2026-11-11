@@ -8,7 +8,7 @@ use typst_library::diag::StrResult;
 use typst_library::foundations::{Content, Label, Selector};
 use typst_library::introspection::{
     DocumentPosition, ElementIntrospector, ElementIntrospectorBuilder, Introspector,
-    Location, PagedPosition,
+    Located, LocatedCache, LocatedPages, LocatedPositions, Location, PagedPosition,
 };
 use typst_library::layout::{Frame, FrameItem, Point, Transform};
 use typst_library::model::{Destination, Numbering};
@@ -30,6 +30,8 @@ pub struct PagedIntrospector {
     page_numberings: Vec<Option<Numbering>>,
     /// The page supplements, indexed by page number minus 1.
     page_supplements: Vec<Content>,
+    /// (fork) `query_pages` / `query_positions` results.
+    located: LocatedCache,
 }
 
 impl PagedIntrospector {
@@ -60,6 +62,17 @@ impl PagedIntrospector {
     /// Resolves the position of the location in the pages.
     pub fn position(&self, location: Location) -> Option<PagedPosition> {
         self.elements.position(location).copied()
+    }
+
+    /// (fork) A query's matches with their pages and positions, cached.
+    fn located(&self, selector: &Selector) -> Located {
+        self.located.get_or(selector, || {
+            Located::new(
+                Introspector::query(self, selector),
+                |l| Introspector::page(self, l),
+                |l| Introspector::position(self, l),
+            )
+        })
     }
 
     /// The underlying element introspector.
@@ -119,6 +132,14 @@ impl Introspector for PagedIntrospector {
         self.elements.position(location).copied().map(DocumentPosition::Paged)
     }
 
+    fn query_pages(&self, selector: &Selector) -> LocatedPages {
+        LocatedPages(self.located(selector))
+    }
+
+    fn query_positions(&self, selector: &Selector) -> LocatedPositions {
+        LocatedPositions(self.located(selector))
+    }
+
     fn page_numbering(&self, location: Location) -> Option<&Numbering> {
         let page = self.page(location)?;
         self.page_numberings
@@ -172,6 +193,7 @@ impl PagedIntrospectorBuilder {
             pages,
             page_numberings,
             page_supplements,
+            located: LocatedCache::default(),
         }
     }
 

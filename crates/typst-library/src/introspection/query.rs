@@ -1,14 +1,20 @@
+use std::num::NonZeroUsize;
+
 use comemo::Tracked;
 use ecow::{EcoString, EcoVec, eco_format};
 use typst_syntax::Span;
+use typst_utils::NonZeroExt;
 
 use super::{History, Introspect};
 use crate::diag::{HintedStrResult, SourceDiagnostic, StrResult, warning};
 use crate::engine::Engine;
 use crate::foundations::{
-    Array, Content, Context, Label, LocatableSelector, Repr, Selector, Value, func,
+    Array, Content, Context, IntoValue, Label, LocatableSelector, Repr, Selector, Value,
+    func,
 };
-use crate::introspection::Introspector;
+use crate::introspection::{
+    DocumentPosition, Introspector, LocatedPages, LocatedPositions, PagedPosition,
+};
 
 /// Finds elements in the document.
 ///
@@ -173,6 +179,120 @@ pub fn query(
     context.introspect()?;
     let vec = engine.introspect(QueryIntrospection(target.0, span));
     Ok(vec.into_iter().map(Value::Content).collect())
+}
+
+/// (fork) `query(target)` with each match's page number: an array of `(element, page)`
+/// pairs in the order of `query`, the page as `element.location().page()` gives it.
+///
+/// One introspection for the whole result, where `query` and a `page()` per match make
+/// one per match. A book-wide index (every line marker by page) read this way costs one
+/// tracked call in every memoized function that reads it, not one per match.
+#[func(contextual)]
+pub fn query_pages(
+    engine: &mut Engine,
+    context: Tracked<Context>,
+    span: Span,
+    /// What to query, as for `query`.
+    target: LocatableSelector,
+) -> HintedStrResult<Array> {
+    context.introspect()?;
+    let located = engine.introspect(QueryPagesIntrospection(target.0, span)).0;
+    Ok(located
+        .elems()
+        .iter()
+        .zip(located.pages())
+        .map(|(elem, page)| {
+            let page = page.unwrap_or(NonZeroUsize::ONE);
+            Value::Array(
+                [Value::Content(elem.clone()), page.into_value()]
+                    .into_iter()
+                    .collect(),
+            )
+        })
+        .collect())
+}
+
+/// (fork) `query(target)` with each match's position: an array of `(element, position)`
+/// pairs in the order of `query`, the position as `element.location().position()` gives
+/// it. One introspection for the whole result (see `query-pages`).
+#[func(contextual)]
+pub fn query_positions(
+    engine: &mut Engine,
+    context: Tracked<Context>,
+    span: Span,
+    /// What to query, as for `query`.
+    target: LocatableSelector,
+) -> HintedStrResult<Array> {
+    context.introspect()?;
+    let located = engine.introspect(QueryPositionsIntrospection(target.0, span)).0;
+    Ok(located
+        .elems()
+        .iter()
+        .zip(located.positions())
+        .map(|(elem, pos)| {
+            let pos = match pos {
+                Some(DocumentPosition::Paged(pos)) => *pos,
+                Some(DocumentPosition::Html(_)) | None => PagedPosition::ORIGIN,
+            };
+            Value::Array(
+                [Value::Content(elem.clone()), pos.into_value()].into_iter().collect(),
+            )
+        })
+        .collect())
+}
+
+/// (fork) The matches of a selector with their pages.
+#[derive(Debug, Clone, PartialEq, Hash)]
+pub struct QueryPagesIntrospection(pub Selector, pub Span);
+
+impl Introspect for QueryPagesIntrospection {
+    type Output = LocatedPages;
+
+    fn introspect(
+        &self,
+        _: &mut Engine,
+        introspector: Tracked<dyn Introspector + '_>,
+    ) -> Self::Output {
+        introspector.query_pages(&self.0)
+    }
+
+    fn diagnose(&self, history: &History<Self::Output>) -> SourceDiagnostic {
+        let lengths = history.as_ref().map(|l| l.0.elems().len());
+        let things = format_selector(&self.0, "elements");
+        let what = if !lengths.converged() {
+            eco_format!("number of {things}")
+        } else {
+            eco_format!("pages of {things}")
+        };
+        format_convergence_warning(self.1, &lengths, &what)
+    }
+}
+
+/// (fork) The matches of a selector with their positions.
+#[derive(Debug, Clone, PartialEq, Hash)]
+pub struct QueryPositionsIntrospection(pub Selector, pub Span);
+
+impl Introspect for QueryPositionsIntrospection {
+    type Output = LocatedPositions;
+
+    fn introspect(
+        &self,
+        _: &mut Engine,
+        introspector: Tracked<dyn Introspector + '_>,
+    ) -> Self::Output {
+        introspector.query_positions(&self.0)
+    }
+
+    fn diagnose(&self, history: &History<Self::Output>) -> SourceDiagnostic {
+        let lengths = history.as_ref().map(|l| l.0.elems().len());
+        let things = format_selector(&self.0, "elements");
+        let what = if !lengths.converged() {
+            eco_format!("number of {things}")
+        } else {
+            eco_format!("positions of {things}")
+        };
+        format_convergence_warning(self.1, &lengths, &what)
+    }
 }
 
 /// Retrieves all matches of a selector in the document.

@@ -75,18 +75,20 @@ impl Engine<'_> {
         let frame = comemo::frame();
         let mut pairs: Vec<(U, Sink)> = Vec::with_capacity(work.len());
         work.into_par_iter()
-            .map(|value| comemo::in_frame(frame.clone(), || {
-                let mut sink = Sink::new();
-                let mut engine = Engine {
-                    world,
-                    introspector,
-                    traced,
-                    sink: sink.track_mut(),
-                    route: route.clone(),
-                    library,
-                };
-                (f(&mut engine, value), sink)
-            }))
+            .map(|value| {
+                comemo::in_frame(frame.clone(), || {
+                    let mut sink = Sink::new();
+                    let mut engine = Engine {
+                        world,
+                        introspector,
+                        traced,
+                        sink: sink.track_mut(),
+                        route: route.clone(),
+                        library,
+                    };
+                    (f(&mut engine, value), sink)
+                })
+            })
             .collect_into_vec(&mut pairs);
 
         // Apply the subsinks to the outer sink.
@@ -133,18 +135,20 @@ impl Engine<'_> {
         sorted
             .into_par_iter()
             .with_max_len(1)
-            .map(|(i, value)| comemo::in_frame(frame.clone(), || {
-                let mut sink = Sink::new();
-                let mut engine = Engine {
-                    world,
-                    introspector,
-                    traced,
-                    sink: sink.track_mut(),
-                    route: route.clone(),
-                    library,
-                };
-                (i, f(&mut engine, value), sink)
-            }))
+            .map(|(i, value)| {
+                comemo::in_frame(frame.clone(), || {
+                    let mut sink = Sink::new();
+                    let mut engine = Engine {
+                        world,
+                        introspector,
+                        traced,
+                        sink: sink.track_mut(),
+                        route: route.clone(),
+                        library,
+                    };
+                    (i, f(&mut engine, value), sink)
+                })
+            })
             .collect_into_vec(&mut done);
         done.sort_by_key(|(i, _, _)| *i);
 
@@ -172,9 +176,27 @@ impl Engine<'_> {
     {
         let introspector = *self.introspector.access("is okay since we're recording it");
         let output = introspection.introspect(self, introspector);
-        self.sink.introspection(Introspection::new(introspection));
+        if RECORD_INTROSPECTIONS.load(std::sync::atomic::Ordering::Relaxed) {
+            self.sink.introspection(Introspection::new(introspection));
+        }
         output
     }
+}
+
+/// (fork) Whether `Engine::introspect` records each introspection in the sink (the
+/// default, as upstream). The record serves one purpose: the hints of the "did not converge"
+/// warning (`analyze`). A caller that runs its own layout loop and does not analyze can turn
+/// it off: every introspection is a mutable call that each memoized result which made it
+/// stores and replays on every reuse (a template that reads the position of 12 000 line
+/// markers replays 12 000 of them per reuse). Results and layout are the same either way.
+static RECORD_INTROSPECTIONS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
+/// (fork) Turn the record of introspections (`Engine::introspect`) on or off for the
+/// process. Memoized results made with it off replay none, also when it is turned on again:
+/// switch it before compiling, and evict comemo's caches when switching it back on.
+pub fn set_record_introspections(on: bool) {
+    RECORD_INTROSPECTIONS.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// May hold a span that is currently under inspection.
