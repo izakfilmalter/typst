@@ -157,6 +157,10 @@ fn layout_document_common(
     info.populate(styles);
     info.populate_locale(styles);
 
+    // (fork) `TYPST_ITER_LOG`: how long the document's (serial) realization and its page
+    // layout take, on stderr
+    let log = std::env::var_os("TYPST_ITER_LOG").is_some();
+    let t0 = std::time::Instant::now();
     let mut children = (engine.library.routines.realize)(
         RealizationKind::Document { info: &mut info },
         &mut engine,
@@ -165,8 +169,18 @@ fn layout_document_common(
         content,
         styles,
     )?;
+    let t1 = std::time::Instant::now();
+    let realized = children.len();
 
     let pages = layout_pages(&mut engine, &mut children, &mut locator, styles)?;
+    if log {
+        eprintln!(
+            "typst: realize {} ms ({} children), pages {} ms",
+            (t1 - t0).as_millis(),
+            realized,
+            t1.elapsed().as_millis()
+        );
+    }
 
     Ok(PagedDocument::new(pages, info))
 }
