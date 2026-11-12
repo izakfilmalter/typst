@@ -282,6 +282,7 @@ fn configuration<'x>(
         },
         line_numbers: (mode == FlowMode::Root).then(|| LineNumberConfig {
             scope: shared.get(ParLine::numbering_scope),
+            counted: shared.get(ParLine::counted),
             default_clearance: {
                 let width = if shared.get(PageElem::flipped) {
                     shared.resolve(PageElem::height)
@@ -435,6 +436,8 @@ struct ColumnConfig {
 struct LineNumberConfig {
     /// Where line numbers are reset.
     scope: LineNumberingScope,
+    /// (fork) Whether the numbers count (`par.line(counted:)`).
+    counted: bool,
     /// The default clearance for `auto`.
     ///
     /// This value should be relative to the page's width, such that the

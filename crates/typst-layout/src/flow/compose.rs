@@ -1,9 +1,11 @@
 use std::num::NonZeroUsize;
 
+use comemo::Track;
+
 use typst_library::diag::{SourceResult, bail};
 use typst_library::engine::Engine;
 use typst_library::foundations::{
-    Content, NativeElement, Packed, Resolve, ShowSet, Smart,
+    Content, Context, NativeElement, Packed, Resolve, ShowSet, Smart,
 };
 use typst_library::introspection::{
     Counter, CounterDisplayElem, CounterState, CounterUpdate, Location, Locator,
@@ -1641,7 +1643,7 @@ fn layout_line_numbers(
     let mut locator = locator.split();
 
     // Reset page-scoped line numbers if currently at the first column.
-    if column == 0 && line_config.scope == LineNumberingScope::Page {
+    if line_config.counted && column == 0 && line_config.scope == LineNumberingScope::Page {
         let reset = layout_line_number_reset(engine, config, &mut locator)?;
         output.push_frame(Point::zero(), reset);
     }
@@ -1655,6 +1657,10 @@ fn layout_line_numbers(
     // Assume the line numbers aren't sorted by height. They must be sorted so
     // we can deduplicate line numbers below based on vertical proximity.
     lines.sort_by_key(|&(y, _)| y);
+
+    // (fork) Uncounted numbers: the numbering's output for 1, made once for the column
+    // (each line lays it out with its own locator, so its elements are each line's own).
+    let mut uncounted: Option<Content> = None;
 
     // Used for horizontal alignment.
     let mut max_number_width = Abs::zero();
@@ -1674,7 +1680,29 @@ fn layout_line_numbers(
         }
 
         // Layout the number and record its width in search of the maximum.
-        let frame = layout_line_number(engine, config, &mut locator, &marker.numbering)?;
+        let frame = if line_config.counted {
+            layout_line_number(engine, config, &mut locator, &marker.numbering)?
+        } else {
+            if uncounted.is_none() {
+                let context = Context::new(None, Some(config.shared));
+                uncounted = Some(
+                    marker
+                        .numbering
+                        .apply(engine, context.track(), Span::detached(), &[1])?
+                        .display(),
+                );
+            }
+            let content = uncounted.clone().unwrap().artifact(ArtifactKind::LineNumber);
+            let mut frame = crate::layout_frame(
+                engine,
+                &content,
+                locator.next(&()),
+                config.shared,
+                Region::new(Axes::splat(Abs::inf()), Axes::splat(false)),
+            )?;
+            frame.translate(Point::with_y(-frame.baseline()));
+            frame
+        };
 
         // Note that this line.y is larger than the previous due to sorting.
         // Therefore, the check at the top of the loop ensures no line numbers

@@ -964,6 +964,16 @@ pub struct ParLine {
     #[ghost]
     #[default(LineNumberingScope::Document)]
     pub numbering_scope: LineNumberingScope,
+
+    /// (fork) Whether the line numbers count. With `{false}`, each line gets the
+    /// numbering's output for the number 1, laid out as a line number is, but without
+    /// the line counter: no counter update and no counter display at every line, and
+    /// no reset at a page's start. For a numbering that ignores its number (a document
+    /// that marks each line rather than numbering it), this lays out the same thing
+    /// with two located elements fewer a line, and no counter lookup.
+    #[ghost]
+    #[default(true)]
+    pub counted: bool,
 }
 
 impl Construct for ParLine {
