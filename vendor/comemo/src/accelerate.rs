@@ -17,7 +17,7 @@ use rustc_hash::FxHashMap;
 /// every one of n lines costs O(n) a display and O(n²) an iteration.
 ///
 /// Here they are kept in a map, and `evict` drops those not used since the
-/// eviction before it and empties the rest: an instance in use keeps its accelerator
+/// eviction before it and empties the large ones: an instance in use keeps its accelerator
 /// (each call's return hash is computed again once after an eviction, not at every
 /// validation), one that was not used for a whole eviction interval loses it (and
 /// gets a new, empty one if it is used again). IDs are never reused and tracked
@@ -47,10 +47,11 @@ pub fn id() -> usize {
     ID.fetch_add(1, Ordering::SeqCst)
 }
 
-/// Evict the accelerators not used since the last eviction, and empty the others (as
-/// upstream empties all of them): what they held is recomputed once, on first use. Their
-/// contents grow with every distinct call on an instance; kept whole, the introspector's
-/// would hold every call of a layout iteration (the whole volume: +100-250 MB).
+/// Evict the accelerators not used since the last eviction, and empty those of the
+/// others that hold more than `KEEP` entries: what they held is recomputed once, on first
+/// use. Their contents grow with every distinct call on an instance; kept whole, the
+/// introspector's would hold every call of a layout iteration (the whole volume: +100-250
+/// MB at the peak).
 pub fn evict() {
     let kept: Vec<Arc<Accelerator>> = {
         let mut accelerators = ACCELERATORS.write();
@@ -62,14 +63,16 @@ pub fn evict() {
     // registry for another one)
     for acc in kept {
         let mut m = acc.map.lock();
-        // (a large one is let go, not just emptied)
-        if m.capacity() > 4096 {
+        // a kept one keeps what it holds up to `KEEP` entries (~3 MB); a larger one is
+        // let go and starts again
+        if m.len() > KEEP {
             *m = FxHashMap::default();
-        } else {
-            m.clear();
         }
     }
 }
+
+/// (fork) The entries an accelerator in use keeps across an eviction.
+const KEEP: usize = 1 << 16;
 
 /// Get an accelerator by ID.
 pub fn get(id: usize) -> Option<Arc<Accelerator>> {
