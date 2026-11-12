@@ -159,6 +159,19 @@ pub struct Locator<'a> {
     outer: Option<&'a LocatorLink<'a>>,
 }
 
+thread_local! {
+    static ROOT_SALT: std::cell::Cell<u128> = const { std::cell::Cell::new(0) };
+}
+
+/// (fork) Salt the root locators this thread creates from now on (0, the default, is
+/// upstream's root). Every location of a document then differs from those of a document
+/// laid out with another salt, so pages of documents laid out apart — a book's parts, each
+/// compiled alone — can be put together into one document whose introspector keeps their
+/// elements apart. Set it on the thread that compiles, before the compile.
+pub fn set_root_salt(salt: u128) {
+    ROOT_SALT.with(|s| s.set(salt));
+}
+
 impl<'a> Locator<'a> {
     /// Create a new root-level locator.
     ///
@@ -166,7 +179,7 @@ impl<'a> Locator<'a> {
     /// are a few places where we use it as well that just don't support
     /// introspection (e.g. tilings).
     pub fn root() -> Self {
-        Self { local: 0, outer: None }
+        Self { local: ROOT_SALT.with(|s| s.get()), outer: None }
     }
 
     /// Creates a new synthetic locator.
