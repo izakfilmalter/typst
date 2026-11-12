@@ -17,10 +17,12 @@ use rustc_hash::FxHashMap;
 /// every one of n lines costs O(n) a display and O(n²) an iteration.
 ///
 /// Here they are kept in a map, and `evict` drops those not used since the
-/// eviction before it: an instance in use keeps its accelerator, one that was not
-/// used for a whole eviction interval loses it (and gets a new, empty one if it is
-/// used again). IDs are never reused and tracked instances are immutable while
-/// tracked, so a kept accelerator is always right; only the memory differs.
+/// eviction before it and empties the rest: an instance in use keeps its accelerator
+/// (each call's return hash is computed again once after an eviction, not at every
+/// validation), one that was not used for a whole eviction interval loses it (and
+/// gets a new, empty one if it is used again). IDs are never reused and tracked
+/// instances are immutable while tracked, so a kept accelerator is always right; only
+/// the memory differs.
 static ACCELERATORS: RwLock<Option<FxHashMap<usize, Arc<Accelerator>>>> = RwLock::new(None);
 
 /// The current ID of the accelerator.
@@ -45,11 +47,27 @@ pub fn id() -> usize {
     ID.fetch_add(1, Ordering::SeqCst)
 }
 
-/// Evict the accelerators not used since the last eviction.
+/// Evict the accelerators not used since the last eviction, and empty the others (as
+/// upstream empties all of them): what they held is recomputed once, on first use. Their
+/// contents grow with every distinct call on an instance; kept whole, the introspector's
+/// would hold every call of a layout iteration (the whole volume: +100-250 MB).
 pub fn evict() {
-    let mut accelerators = ACCELERATORS.write();
-    if let Some(map) = accelerators.as_mut() {
+    let kept: Vec<Arc<Accelerator>> = {
+        let mut accelerators = ACCELERATORS.write();
+        let Some(map) = accelerators.as_mut() else { return };
         map.retain(|_, acc| acc.used.swap(false, Ordering::Relaxed));
+        map.values().cloned().collect()
+    };
+    // (outside the registry's lock: a call holding an accelerator's lock may ask the
+    // registry for another one)
+    for acc in kept {
+        let mut m = acc.map.lock();
+        // (a large one is let go, not just emptied)
+        if m.capacity() > 4096 {
+            *m = FxHashMap::default();
+        } else {
+            m.clear();
+        }
     }
 }
 
