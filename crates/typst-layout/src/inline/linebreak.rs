@@ -394,6 +394,13 @@ fn linebreak_optimized_bounded<'a>(
         gap: f64,
         /// Lines up to and including this one (kept apart only with a looseness).
         count: usize,
+        /// (fork) The breakpoint this line ends at, and whether `line` was let go: an
+        /// entry before the active ones is never a predecessor again, so its line is
+        /// dropped and, if it is on the chosen path, built again at the end from the
+        /// same text range, breakpoint and previous line (the same `line` call the
+        /// search made). An unbounded search kept every line it built.
+        bp: Breakpoint,
+        freed: bool,
     }
 
     let shape = p.config.hang.0;
@@ -408,7 +415,11 @@ fn linebreak_optimized_bounded<'a>(
         fit: 0,
         gap: 0.0,
         count: 0,
+        bp: Breakpoint::Normal,
+        freed: false,
     }];
+    // (fork) entries below this one have let their lines go
+    let mut freed_upto = 1;
 
     let mut active = 0;
     let mut prev_end = 0;
@@ -505,6 +516,8 @@ fn linebreak_optimized_bounded<'a>(
                     fit,
                     gap: gap_log(metrics, line_ratio),
                     count,
+                    bp: breakpoint,
+                    freed: false,
                 });
             }
         }
@@ -518,6 +531,14 @@ fn linebreak_optimized_bounded<'a>(
         last_start = table.len();
         table.extend(best.into_values());
         prev_end = end;
+
+        // (fork) the entries no longer active are never predecessors again: their lines go
+        while freed_upto < active.min(table.len()) {
+            let e = &mut table[freed_upto];
+            e.line = Line::empty();
+            e.freed = true;
+            freed_upto += 1;
+        }
     });
 
     // Retrace the best path (from the cheapest entry at the last breakpoint; with a
@@ -557,14 +578,23 @@ fn linebreak_optimized_bounded<'a>(
 
     let total = table[idx].total;
     let count = table[idx].count;
+    let mut path = Vec::with_capacity(16);
     while idx != 0 {
-        table.truncate(idx + 1);
-        let entry = table.pop().unwrap();
-        lines.push(entry.line);
-        idx = entry.pred;
+        path.push(idx);
+        idx = table[idx].pred;
     }
-
-    lines.reverse();
+    path.reverse();
+    // (fork) a line that was let go is built again exactly as the search built it
+    let empty = Line::empty();
+    for i in path {
+        let attempt = if table[i].freed {
+            let start = table[table[i].pred].end;
+            line(engine, p, start..table[i].end, table[i].bp, Some(lines.last().unwrap_or(&empty)))
+        } else {
+            std::mem::replace(&mut table[i].line, Line::empty())
+        };
+        lines.push(attempt);
+    }
     (lines, total, best_count, count)
 }
 
