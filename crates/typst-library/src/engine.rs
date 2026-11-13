@@ -73,10 +73,12 @@ impl Engine<'_> {
         // Work in parallel (fork: in the caller's memoization frame, so that what the
         // workers compute counts as part of what the caller computes).
         let frame = comemo::frame();
+        // (fork) and with the caller's memoization key salt
+        let salt = comemo::key_salt();
         let mut pairs: Vec<(U, Sink)> = Vec::with_capacity(work.len());
         work.into_par_iter()
             .map(|value| {
-                comemo::in_frame(frame.clone(), || {
+                comemo::in_frame(frame.clone(), || comemo::with_key_salt(salt, || {
                     let mut sink = Sink::new();
                     let mut engine = Engine {
                         world,
@@ -87,7 +89,7 @@ impl Engine<'_> {
                         library,
                     };
                     (f(&mut engine, value), sink)
-                })
+                }))
             })
             .collect_into_vec(&mut pairs);
 
@@ -131,12 +133,14 @@ impl Engine<'_> {
             order.iter().map(|&i| (i, slots[i].take().unwrap())).collect();
 
         let frame = comemo::frame();
+        // (fork) and with the caller's memoization key salt
+        let salt = comemo::key_salt();
         let mut done: Vec<(usize, U, Sink)> = Vec::with_capacity(sorted.len());
         sorted
             .into_par_iter()
             .with_max_len(1)
             .map(|(i, value)| {
-                comemo::in_frame(frame.clone(), || {
+                comemo::in_frame(frame.clone(), || comemo::with_key_salt(salt, || {
                     let mut sink = Sink::new();
                     let mut engine = Engine {
                         world,
@@ -147,7 +151,7 @@ impl Engine<'_> {
                         library,
                     };
                     (i, f(&mut engine, value), sink)
-                })
+                }))
             })
             .collect_into_vec(&mut done);
         done.sort_by_key(|(i, _, _)| *i);

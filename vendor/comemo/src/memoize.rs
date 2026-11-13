@@ -60,9 +60,14 @@ where
         return output;
     }
 
-    // Compute the hash of the input's key part.
+    // Compute the hash of the input's key part (fork: with the thread's key salt, when one is
+    // set: `set_key_salt`).
     let key = {
         let mut state = SipHasher13::new();
+        let salt = KEY_SALT.with(|c| c.get());
+        if salt != 0 {
+            std::hash::Hasher::write(&mut state, &salt.to_le_bytes());
+        }
         input.key(&mut state);
         state.finish128().as_u128()
     };
@@ -367,6 +372,31 @@ impl<C: std::hash::Hash + Send + Sync + 'static, Out: Send + Sync + 'static> Tou
             cache.touch(leaf, depth + 1);
         }
     }
+}
+
+thread_local! {
+    static KEY_SALT: std::cell::Cell<u128> = const { std::cell::Cell::new(0) };
+}
+
+/// (fork) Salt the keys of the memoized calls made on this thread (and, through
+/// `Engine::parallelize`, by the work it fans out to): calls under different salts never share a
+/// cache entry, so independent documents laid out side by side in one process (theology-books'
+/// units) do not look up and validate each other's results. 0, the default, is upstream's keys.
+pub fn set_key_salt(salt: u128) {
+    KEY_SALT.with(|c| c.set(salt));
+}
+
+/// (fork) This thread's key salt (`set_key_salt`), to carry into work it runs on other threads.
+pub fn key_salt() -> u128 {
+    KEY_SALT.with(|c| c.get())
+}
+
+/// (fork) Run `f` with the key salt `salt` (from `key_salt()` on the thread that spawned it).
+pub fn with_key_salt<R>(salt: u128, f: impl FnOnce() -> R) -> R {
+    let saved = KEY_SALT.with(|c| c.replace(salt));
+    let out = f();
+    KEY_SALT.with(|c| c.set(saved));
+    out
 }
 
 /// (fork) The memoized results a computation was made of so far (shared with the
