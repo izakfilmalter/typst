@@ -330,6 +330,10 @@ fn loose_bound() -> bool {
     *ON.get_or_init(|| std::env::var("TYPST_LOOSE_BOUND").map_or(true, |v| v != "0"))
 }
 
+/// (fork) How many times the looseness bound's approximate search runs again, each time
+/// without a line it chose that proved overfull when built.
+const LOOSE_RETRIES: usize = 64;
+
 /// (fork) Optimized line breaking with a looseness, bounded. The search for a paragraph
 /// `looseness` lines longer or shorter keeps the best layout per line count at every
 /// breakpoint; without a bound it builds every line the text allows, for every count (a
@@ -355,7 +359,24 @@ fn linebreak_loose_bounded<'a>(
     if want < 1 {
         return None;
     }
-    let bound = linebreak_approximate_count(engine, p, width, metrics, want as usize);
+    // (a layout of the wanted count whose line proves overfull when built bounds nothing:
+    // that line is forbidden and the approximate search runs again. Any finite bound is
+    // sound here: the bounded search's answer is taken only when it has the wanted count,
+    // and then the cheapest such layout survived the bound.)
+    let mut forbidden = std::collections::HashSet::new();
+    let mut bound = Cost::INFINITY;
+    for _ in 0..LOOSE_RETRIES {
+        match linebreak_approximate_count(engine, p, width, metrics, want as usize, &forbidden) {
+            Ok(b) => {
+                bound = b;
+                break;
+            }
+            Err(Some(line)) => {
+                forbidden.insert(line);
+            }
+            Err(None) => break,
+        }
+    }
     if !bound.is_finite() {
         return None;
     }
@@ -789,7 +810,8 @@ fn linebreak_approximate_count(
     width: Abs,
     metrics: &CostMetrics,
     target: usize,
-) -> Cost {
+    forbidden: &std::collections::HashSet<(usize, usize)>,
+) -> Result<Cost, Option<(usize, usize)>> {
     // Determine the cumulative estimation metrics.
     let estimates = Estimates::compute(p);
 
@@ -882,8 +904,12 @@ fn linebreak_approximate_count(
             // If this attempt is better than what we had before, take it!
             let class = (pred.class + 1).min(shape);
             let count = pred.count + 1;
-            // (no layout of more lines than the target can end at it)
-            if count <= target && best.get(&(count, class)).is_none_or(|best| best.total >= total) {
+            // (no layout of more lines than the target can end at it; nor a line found
+            // overfull when built: see `linebreak_loose_bounded`)
+            if count <= target
+                && !forbidden.contains(&(start, end))
+                && best.get(&(count, class)).is_none_or(|best| best.total >= total)
+            {
                 best.insert((count, class), Entry {
                     pred: pred_index,
                     total,
@@ -913,7 +939,7 @@ fn linebreak_approximate_count(
         .filter(|&i| table[i].count == target && table[i].end == p.text.len())
         .min_by(|&a, &b| table[a].total.total_cmp(&table[b].total))
     else {
-        return Cost::INFINITY;
+        return Err(None);
     };
     while idx != 0 {
         indices.push(idx);
@@ -955,7 +981,7 @@ fn linebreak_approximate_count(
         // optimal layout produces). Thus, we immediately bail with an infinite
         // bound in this case.
         if ratio < metrics.min_ratio {
-            return Cost::INFINITY;
+            return Err(Some((start, end)));
         }
 
         pred = attempt;
@@ -963,7 +989,7 @@ fn linebreak_approximate_count(
         exact += line_cost;
     }
 
-    exact
+    Ok(exact)
 }
 
 /// Compute the stretch ratio and cost of a line.
