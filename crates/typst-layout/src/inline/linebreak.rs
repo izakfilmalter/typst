@@ -330,9 +330,10 @@ fn loose_bound() -> bool {
     *ON.get_or_init(|| std::env::var("TYPST_LOOSE_BOUND").map_or(true, |v| v != "0"))
 }
 
-/// (fork) How many times the looseness bound's approximate search runs again, each time
-/// without a line it chose that proved overfull when built.
-const LOOSE_RETRIES: usize = 64;
+/// (fork) How many times the looseness bound's approximate search runs, each time again
+/// without the lines that hold one it chose that proved overfull when built (each run builds
+/// every line of its layout: past a few, the search without a bound is as quick).
+const LOOSE_RETRIES: usize = 8;
 
 /// (fork) Optimized line breaking with a looseness, bounded. The search for a paragraph
 /// `looseness` lines longer or shorter keeps the best layout per line count at every
@@ -360,10 +361,11 @@ fn linebreak_loose_bounded<'a>(
         return None;
     }
     // (a layout of the wanted count whose line proves overfull when built bounds nothing:
-    // that line is forbidden and the approximate search runs again. Any finite bound is
-    // sound here: the bounded search's answer is taken only when it has the wanted count,
-    // and then the cheapest such layout survived the bound.)
-    let mut forbidden = std::collections::HashSet::new();
+    // that line, and every line holding its text (as overfull, but for negative spacing),
+    // is forbidden and the approximate search runs again. Any finite bound is sound here:
+    // the bounded search's answer is taken only when it has the wanted count, and then the
+    // cheapest such layout survived the bound.)
+    let mut forbidden = Vec::new();
     let mut bound = Cost::INFINITY;
     for _ in 0..LOOSE_RETRIES {
         match linebreak_approximate_count(engine, p, width, metrics, want as usize, &forbidden) {
@@ -371,10 +373,8 @@ fn linebreak_loose_bounded<'a>(
                 bound = b;
                 break;
             }
-            Err(Some(line)) => {
-                forbidden.insert(line);
-            }
-            Err(None) => break,
+            Err(lines) if !lines.is_empty() => forbidden.extend(lines),
+            Err(_) => break,
         }
     }
     if !bound.is_finite() {
@@ -401,7 +401,9 @@ fn linebreak_optimized_bounded<'a>(
     struct Entry<'a> {
         pred: usize,
         total: Cost,
-        line: Line<'a>,
+        /// (fork) Shared by the entries that end at the same breakpoint from the
+        /// same start (see `built` below).
+        line: std::rc::Rc<Line<'a>>,
         end: usize,
         /// Lines up to and including this one, capped at the paragraph shape's
         /// indented lines (always 0 without a shape): the shape's lines have their
@@ -425,12 +427,13 @@ fn linebreak_optimized_bounded<'a>(
     }
 
     let shape = p.config.hang.0;
+    let empty_line = std::rc::Rc::new(Line::empty());
 
     // Dynamic programming table.
     let mut table = vec![Entry {
         pred: 0,
         total: 0.0,
-        line: Line::empty(),
+        line: empty_line.clone(),
         end: 0,
         class: 0,
         fit: 0,
@@ -456,6 +459,15 @@ fn linebreak_optimized_bounded<'a>(
         // of the predecessor: the measure depends on it).
         let mut line_lower_bound: Vec<Option<Cost>> = vec![None; shape + 1];
 
+        // (fork) The lines built for this breakpoint, by start. The entries ending at
+        // one breakpoint differ in class, slot and (with a looseness) line count, but
+        // the line from one of them to this breakpoint is the same `line` call: it
+        // reads the previous line only to repeat a hard hyphen, so that case is built
+        // apiece. With a looseness a breakpoint has an entry for every count the text
+        // allows there, and the line was built for each: a 214-line paragraph's search
+        // took ~60 s.
+        let mut built: Vec<(usize, std::rc::Rc<Line<'a>>)> = Vec::new();
+
         for (pred_index, pred) in table.iter().enumerate().skip(active) {
             let start = pred.end;
             let unbreakable = prev_end == start;
@@ -469,7 +481,15 @@ fn linebreak_optimized_bounded<'a>(
             }
 
             // Build the line.
-            let attempt = line(engine, p, start..end, breakpoint, Some(&pred.line));
+            let attempt = if pred.line.dash == Some(super::line::Dash::Hard) {
+                std::rc::Rc::new(line(engine, p, start..end, breakpoint, Some(&*pred.line)))
+            } else if let Some((_, l)) = built.iter().find(|(s, _)| *s == start) {
+                l.clone()
+            } else {
+                let l = std::rc::Rc::new(line(engine, p, start..end, breakpoint, Some(&*pred.line)));
+                built.push((start, l.clone()));
+                l
+            };
 
             // Determine the cost of the line and its stretch ratio.
             let (line_ratio, line_cost) = ratio_and_cost(
@@ -556,7 +576,7 @@ fn linebreak_optimized_bounded<'a>(
         // (fork) the entries no longer active are never predecessors again: their lines go
         while freed_upto < active.min(table.len()) {
             let e = &mut table[freed_upto];
-            e.line = Line::empty();
+            e.line = empty_line.clone();
             e.freed = true;
             freed_upto += 1;
         }
@@ -606,14 +626,18 @@ fn linebreak_optimized_bounded<'a>(
     }
     path.reverse();
     // (fork) a line that was let go is built again exactly as the search built it
+    // (and one still shared with another entry, the same way)
     let empty = Line::empty();
     for i in path {
-        let attempt = if table[i].freed {
+        let kept = if table[i].freed {
+            None
+        } else {
+            std::rc::Rc::try_unwrap(std::mem::replace(&mut table[i].line, empty_line.clone())).ok()
+        };
+        let attempt = kept.unwrap_or_else(|| {
             let start = table[table[i].pred].end;
             line(engine, p, start..table[i].end, table[i].bp, Some(lines.last().unwrap_or(&empty)))
-        } else {
-            std::mem::replace(&mut table[i].line, Line::empty())
-        };
+        });
         lines.push(attempt);
     }
     (lines, total, best_count, count)
@@ -810,8 +834,8 @@ fn linebreak_approximate_count(
     width: Abs,
     metrics: &CostMetrics,
     target: usize,
-    forbidden: &std::collections::HashSet<(usize, usize)>,
-) -> Result<Cost, Option<(usize, usize)>> {
+    forbidden: &[(usize, usize)],
+) -> Result<Cost, Vec<(usize, usize)>> {
     // Determine the cumulative estimation metrics.
     let estimates = Estimates::compute(p);
 
@@ -889,7 +913,11 @@ fn linebreak_approximate_count(
                 justify,
                 unbreakable,
                 consecutive_dash,
-                true,
+                // (fork) judged overfull as the exact search judges it: past the
+                // approximate search's stricter limit, a paragraph whose lines fit only
+                // with their full shrink had no layout of the count without an
+                // "overfull" line, and took grossly overfull ones (each costs the same)
+                false,
             );
 
             // Adjust the set of active breakpoints.
@@ -904,10 +932,10 @@ fn linebreak_approximate_count(
             // If this attempt is better than what we had before, take it!
             let class = (pred.class + 1).min(shape);
             let count = pred.count + 1;
-            // (no layout of more lines than the target can end at it; nor a line found
-            // overfull when built: see `linebreak_loose_bounded`)
+            // (no layout of more lines than the target can end at it; nor a line holding
+            // one found overfull when built: see `linebreak_loose_bounded`)
             if count <= target
-                && !forbidden.contains(&(start, end))
+                && !forbidden.iter().any(|&(s, e)| start <= s && e <= end)
                 && best.get(&(count, class)).is_none_or(|best| best.total >= total)
             {
                 best.insert((count, class), Entry {
@@ -939,7 +967,7 @@ fn linebreak_approximate_count(
         .filter(|&i| table[i].count == target && table[i].end == p.text.len())
         .min_by(|&a, &b| table[a].total.total_cmp(&table[b].total))
     else {
-        return Err(None);
+        return Err(Vec::new());
     };
     while idx != 0 {
         indices.push(idx);
@@ -956,6 +984,8 @@ fn linebreak_approximate_count(
     // proper optimization pass.
     let mut pred_fit = 0;
     let mut pred_gap = 0.0;
+    // (fork) every line of the layout that proves overfull, for the caller to forbid
+    let mut overfull = Vec::new();
     for (n, idx) in indices.into_iter().rev().enumerate() {
         let Entry { end, breakpoint, unbreakable, .. } = table[idx];
 
@@ -978,10 +1008,10 @@ fn linebreak_approximate_count(
         // exact layout is guaranteed to find the same layout. If, however, the
         // line is overfull, we do not have this guarantee. Then, our bound
         // becomes useless and actively harmful (it could be lower than what
-        // optimal layout produces). Thus, we immediately bail with an infinite
-        // bound in this case.
+        // optimal layout produces). Thus, we give no bound in this case (fork: but
+        // name every such line, so the caller can search again without them).
         if ratio < metrics.min_ratio {
-            return Err(Some((start, end)));
+            overfull.push((start, end));
         }
 
         pred = attempt;
@@ -989,7 +1019,7 @@ fn linebreak_approximate_count(
         exact += line_cost;
     }
 
-    Ok(exact)
+    if overfull.is_empty() { Ok(exact) } else { Err(overfull) }
 }
 
 /// Compute the stretch ratio and cost of a line.
