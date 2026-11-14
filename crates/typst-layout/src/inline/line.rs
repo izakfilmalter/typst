@@ -482,18 +482,15 @@ pub fn apply_shift<'a>(
     frame.translate(Point::new(compensation, baseline));
 }
 
-/// Commit to a line and build its frame.
-#[allow(clippy::too_many_arguments)]
-pub fn commit(
-    engine: &mut Engine,
+/// The same justification and optical overhang used for printing a line.
+/// Shape contrast trials must measure these advances, including a ragged last
+/// line, instead of a hypothetical stretch ratio from the breaker.
+pub(super) fn justification(
     p: &Preparation,
     line: &Line,
     width: Abs,
-    full: Abs,
     indent: Abs,
-    anchor: Abs,
-    locator: &mut SplitLocator<'_>,
-) -> SourceResult<Frame> {
+) -> (Abs, Abs, f64, Abs) {
     let mut remaining = width - line.width - p.config.hanging_indent - indent;
     let mut offset = Abs::zero();
 
@@ -560,6 +557,25 @@ pub fn commit(
             remaining = Abs::zero();
         }
     }
+
+    (remaining, offset, justification_ratio, extra_justification)
+}
+
+/// Commit to a line and build its frame.
+#[allow(clippy::too_many_arguments)]
+pub fn commit(
+    engine: &mut Engine,
+    p: &Preparation,
+    line: &Line,
+    width: Abs,
+    full: Abs,
+    indent: Abs,
+    anchor: Abs,
+    locator: &mut SplitLocator<'_>,
+) -> SourceResult<Frame> {
+    let (mut remaining, mut offset, justification_ratio, extra_justification) =
+        justification(p, line, width, indent);
+    let fr = line.fr();
 
     let mut top = Abs::zero();
     let mut bottom = Abs::zero();
