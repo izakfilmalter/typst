@@ -1298,16 +1298,16 @@ fn printed_gaps(p: &Preparation, line: &Line, width: Abs, index: usize, unit: Ab
         let mut last_box = None;
         let mut space = false;
         let mut group = None;
-        let mut space_ratios = 0.0;
-        let mut spaces = 0;
+        let mut spaces = Vec::new();
+        let mut extras = Vec::new();
         for glyph in shaped.glyphs.iter() {
             let key = (&glyph.font, glyph.y_offset, glyph.size);
             if group != Some(key) {
                 // ShapedText::build emits a separate TextItem for each font,
                 // vertical offset and size; the geometry extractor does too.
-                if spaces > 0 { widest_space = widest_space.max(space_ratios / spaces as f64); }
-                space_ratios = 0.0;
-                spaces = 0;
+                widest_space = widest_space.max(printed_space_ratio(&spaces, &mut extras));
+                spaces.clear();
+                extras.clear();
                 last_box = None;
                 space = false;
                 group = Some(key);
@@ -1317,13 +1317,14 @@ fn printed_gaps(p: &Preparation, line: &Line, width: Abs, index: usize, unit: Ab
             let right = (right * ratio).at(glyph.size) + if glyph.is_justifiable() { extra } else { Abs::zero() };
             let offset = glyph.x_offset.at(glyph.size) + left;
             let natural = glyph.font.x_advance(glyph.glyph_id).unwrap_or_default().at(glyph.size);
+            let advance = glyph.x_advance.at(glyph.size) + left + right;
             if glyph.c == ' ' {
                 space = true;
                 if natural > Abs::zero() {
-                    space_ratios += (glyph.x_advance.at(glyph.size) + left + right) / natural;
-                    spaces += 1;
+                    spaces.push((advance / glyph.size, natural / glyph.size));
                 }
             } else if natural > Abs::zero() {
+                extras.push((advance - natural) / glyph.size);
                 if space && let Some(previous) = last_box {
                     sum += cursor + offset - previous;
                     count += 1;
@@ -1333,12 +1334,22 @@ fn printed_gaps(p: &Preparation, line: &Line, width: Abs, index: usize, unit: Ab
             }
             cursor += glyph.x_advance.at(glyph.size) + left + right;
         }
-        if spaces > 0 { widest_space = widest_space.max(space_ratios / spaces as f64); }
+        widest_space = widest_space.max(printed_space_ratio(&spaces, &mut extras));
     }
     if count < 2 { return None; }
     // A common normalisation cancels in pairwise contrasts. It must not depend
     // on whichever font/style happened to supply the paragraph's first space.
     Some(((sum / count as f64 / unit).max(0.1).ln(), widest_space))
+}
+
+/// Word-space expansion excludes tracking. Match the geometry extractor's
+/// clamped median of non-space advances, with kerning treated as noise.
+fn printed_space_ratio(spaces: &[(f64, f64)], extras: &mut [f64]) -> f64 {
+    extras.sort_by(f64::total_cmp);
+    let track = if extras.is_empty() { 0.0 } else { extras[extras.len() / 2] }
+        .clamp(-0.02, 0.02);
+    spaces.iter().map(|&(advance, natural)| (advance - track) / natural)
+        .fold(0.0, f64::max)
 }
 
 /// The spacing class of a line with the given stretch ratio.
@@ -1830,7 +1841,15 @@ where
 
 #[cfg(test)]
 mod shape_repair_tests {
-    use super::ShapeQuality;
+    use super::{ShapeQuality, printed_space_ratio};
+
+    #[test]
+    fn printed_space_expansion_excludes_tracking_and_keeps_the_worst_space() {
+        let spaces = [(0.32, 0.2), (0.30, 0.2)];
+        assert!((printed_space_ratio(&spaces, &mut [0.01, 0.02, 0.04]) - 1.5).abs() < 1e-9);
+        assert!((printed_space_ratio(&[(0.3, 0.2)], &mut []) - 1.5).abs() < 1e-9);
+        assert!((printed_space_ratio(&[(0.3, 0.2)], &mut [0.05]) - 1.4).abs() < 1e-9);
+    }
 
     #[test]
     fn repair_requires_real_improvement_without_a_new_spacing_failure() {
