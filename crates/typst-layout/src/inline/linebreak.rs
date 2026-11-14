@@ -242,7 +242,68 @@ fn linebreak_optimized<'a>(
     p: &'a Preparation<'a>,
     width: Abs,
 ) -> Vec<Line<'a>> {
-    let metrics = CostMetrics::compute(p);
+    let mut metrics = CostMetrics::compute(p);
+    let best = linebreak_optimized_with_metrics(engine, p, width, &metrics);
+    if metrics.contrast <= 0.0 || p.config.hang.0 < 2 || !shape_is_ltr(p, &best) { return best; }
+    let shift = p.config.hang_shift.get();
+    let before = shape_quality(p, width, &best, metrics.gap_unit);
+    if before.failures() == 0 { return best; }
+    metrics.exact_gap = true;
+    let candidate = linebreak_optimized_with_metrics(engine, p, width, &metrics);
+    let after = shape_quality(p, width, &candidate, metrics.gap_unit);
+    // Repair an actual failing shape without changing its line count or trading
+    // contrast for excessive spaces. Existing tighter gaps cannot become tighter;
+    // otherwise keep at least 65% of a normal space. Clean shapes retain their
+    // original breaks and indent without entering the second search.
+    if shape_is_ltr(p, &candidate) && after.improves(before, candidate.len(), best.len()) {
+        candidate
+    } else {
+        p.config.hang_shift.set(shift);
+        best
+    }
+}
+
+fn shape_is_ltr(p: &Preparation, lines: &[Line]) -> bool {
+    lines.iter().take(p.config.hang.0).all(|line| line.items.iter()
+        .filter_map(Item::text).all(|s| s.dir == typst_library::layout::Dir::LTR))
+}
+
+#[derive(Clone, Copy)]
+struct ShapeQuality {
+    contrast: usize,
+    min_gap: f64,
+    loose: usize,
+    max_space: f64,
+}
+
+impl ShapeQuality {
+    fn failures(self) -> usize { self.contrast + self.loose }
+
+    fn improves(self, before: Self, lines: usize, before_lines: usize) -> bool {
+        lines == before_lines && self.failures() < before.failures()
+            && self.contrast <= before.contrast && self.loose <= before.loose
+            && self.min_gap >= before.min_gap.min(0.65_f64.ln()) - 1e-6
+            && self.max_space <= before.max_space.max(1.605) + 1e-6
+    }
+}
+
+fn shape_quality(p: &Preparation, width: Abs, lines: &[Line], unit: Abs) -> ShapeQuality {
+    let gaps: Vec<_> = lines.iter().take(p.config.hang.0).enumerate()
+        .filter_map(|(i, line)| printed_gaps(p, line, width, i, unit)).collect();
+    let bad = gaps.windows(2).filter(|w| (w[0].0 - w[1].0).abs() > 1.6_f64.ln()).count();
+    let loose = gaps.iter().filter(|g| g.1 >= 1.605).count();
+    ShapeQuality { contrast: bad, loose,
+        min_gap: gaps.iter().map(|g| g.0).fold(f64::INFINITY, f64::min),
+        max_space: gaps.iter().map(|g| g.1).fold(0.0, f64::max) }
+
+}
+
+fn linebreak_optimized_with_metrics<'a>(
+    engine: &Engine,
+    p: &'a Preparation<'a>,
+    width: Abs,
+    metrics: &CostMetrics,
+) -> Vec<Line<'a>> {
     let flex = p.config.hang_flex;
     if flex.is_zero() {
         return linebreak_optimized_at(engine, p, width, &metrics).0;
@@ -257,24 +318,17 @@ fn linebreak_optimized<'a>(
     // (lines beside the shape already even — no line past half its stretch, no
     // contrast between neighbours — keep the nominal indent: the trials cost a
     // paragraph's breaking four times over)
-    let shape = p.config.hang.0.min(count.saturating_sub(1));
-    let ratios: Vec<f64> = (0..shape)
+    let shape = p.config.hang.0.min(if metrics.exact_gap { count } else { count.saturating_sub(1) });
+    let ratios: Vec<(f64, f64)> = (0..shape)
         .map(|i| {
             let l = &best[i];
-            raw_ratio(
-                p,
-                width - p.config.hang_at(i),
-                l.width,
-                l.stretchability(),
-                l.shrinkability(),
-                l.justifiables(),
-            )
+            let ratio = raw_ratio(p, width - p.config.hang_at(i), l.width,
+                l.stretchability(), l.shrinkability(), l.justifiables());
+            (ratio, line_gap_log(p, &metrics, l, ratio, i, width))
         })
         .collect();
-    let even = ratios.iter().all(|&r| r <= 0.6)
-        && ratios.windows(2).all(|w| {
-            (gap_log(&metrics, w[0]) - gap_log(&metrics, w[1])).abs() <= CONTRAST_FREE
-        });
+    let even = ratios.iter().all(|&(r, _)| r <= 0.6)
+        && ratios.windows(2).all(|w| (w[0].1 - w[1].1).abs() <= CONTRAST_FREE);
     if even {
         return best;
     }
@@ -517,8 +571,9 @@ fn linebreak_optimized_bounded<'a>(
             }
 
             // Spacing contrast with the line above, between the shape's lines.
-            let fit = fitness(metrics, line_ratio);
-            let contrast = contrast_cost(metrics, shape, pred.class, pred.fit, pred.gap, line_ratio);
+            let gap = line_gap_log(p, metrics, &attempt, line_ratio, pred.class, width);
+            let fit = fitness(metrics, gap);
+            let contrast = contrast_cost(metrics, shape, pred.class, pred.fit, pred.gap, gap);
 
             // The total cost of this line and its chain of predecessors.
             let total = pred.total + line_cost + contrast;
@@ -555,7 +610,7 @@ fn linebreak_optimized_bounded<'a>(
                     end,
                     class,
                     fit,
-                    gap: gap_log(metrics, line_ratio),
+                    gap,
                     count,
                     bp: breakpoint,
                     freed: false,
@@ -800,10 +855,11 @@ fn linebreak_optimized_approximate(
             breakpoint,
             unbreakable,
         );
+        let gap = line_gap_log(p, metrics, &attempt, ratio, n, width);
         let line_cost = line_cost
-            + contrast_cost(metrics, p.config.hang.0, n.min(p.config.hang.0), pred_fit, pred_gap, ratio);
-        pred_fit = fitness(metrics, ratio);
-        pred_gap = gap_log(metrics, ratio);
+            + contrast_cost(metrics, p.config.hang.0, n.min(p.config.hang.0), pred_fit, pred_gap, gap);
+        pred_fit = fitness(metrics, gap);
+        pred_gap = gap;
 
         // If approximation produces a valid layout without too much shrinking,
         // exact layout is guaranteed to find the same layout. If, however, the
@@ -999,10 +1055,11 @@ fn linebreak_approximate_count(
             breakpoint,
             unbreakable,
         );
+        let gap = line_gap_log(p, metrics, &attempt, ratio, n, width);
         let line_cost = line_cost
-            + contrast_cost(metrics, p.config.hang.0, n.min(p.config.hang.0), pred_fit, pred_gap, ratio);
-        pred_fit = fitness(metrics, ratio);
-        pred_gap = gap_log(metrics, ratio);
+            + contrast_cost(metrics, p.config.hang.0, n.min(p.config.hang.0), pred_fit, pred_gap, gap);
+        pred_fit = fitness(metrics, gap);
+        pred_gap = gap;
 
         // If approximation produces a valid layout without too much shrinking,
         // exact layout is guaranteed to find the same layout. If, however, the
@@ -1214,13 +1271,94 @@ fn gap_log(metrics: &CostMetrics, ratio: f64) -> f64 {
     g.max(0.1).ln()
 }
 
+/// The mean printed word-box gap on a shape line, in one common unit. A
+/// paragraph can mix tracked small caps, italic and ordinary text. Their natural
+/// spaces and tracking differ, so a single paragraph-wide ratio is not a gap.
+/// Match the justification applied by `ShapedText::build`, including ragged last
+/// lines, which keep natural spaces when they are not overfull.
+fn line_gap_log(p: &Preparation, metrics: &CostMetrics, line: &Line, ratio: f64, index: usize, width: Abs) -> f64 {
+    if !metrics.exact_gap { return gap_log(metrics, ratio); }
+    if metrics.contrast <= 0.0 || index >= p.config.hang.0 { return 0.0; }
+    printed_gaps(p, line, width, index, metrics.gap_unit).map_or(0.0, |g| g.0)
+}
+
+fn printed_gaps(p: &Preparation, line: &Line, width: Abs, index: usize, unit: Abs) -> Option<(f64, f64)> {
+    let indent = p.config.hang_at(index);
+    let (_, _, ratio, extra) = super::line::justification(
+        p, line, width + p.config.hanging_indent, indent);
+
+    let mut sum = Abs::zero();
+    let mut count = 0;
+    let mut widest_space = 0.0_f64;
+    for shaped in line.items.iter().filter_map(Item::text) {
+        // Keep the legacy search for bidi shapes until their visual word-box
+        // ordering is supported. Never interpret a negative advance as a gap.
+        if shaped.dir != typst_library::layout::Dir::LTR { return None; }
+        let mut cursor = Abs::zero();
+        let mut last_box = None;
+        let mut space = false;
+        let mut group = None;
+        let mut spaces = Vec::new();
+        let mut extras = Vec::new();
+        for glyph in shaped.glyphs.iter() {
+            let key = (&glyph.font, glyph.y_offset, glyph.size);
+            if group != Some(key) {
+                // ShapedText::build emits a separate TextItem for each font,
+                // vertical offset and size; the geometry extractor does too.
+                widest_space = widest_space.max(printed_space_ratio(&spaces, &mut extras));
+                spaces.clear();
+                extras.clear();
+                last_box = None;
+                space = false;
+                group = Some(key);
+            }
+            let (left, right) = if ratio < 0.0 { glyph.shrinkability() } else { glyph.stretchability() };
+            let left = (left * ratio).at(glyph.size);
+            let right = (right * ratio).at(glyph.size) + if glyph.is_justifiable() { extra } else { Abs::zero() };
+            let offset = glyph.x_offset.at(glyph.size) + left;
+            let natural = glyph.font.x_advance(glyph.glyph_id).unwrap_or_default().at(glyph.size);
+            let advance = glyph.x_advance.at(glyph.size) + left + right;
+            if glyph.c == ' ' {
+                space = true;
+                if natural > Abs::zero() {
+                    spaces.push((advance / glyph.size, natural / glyph.size));
+                }
+            } else if natural > Abs::zero() {
+                extras.push((advance - natural) / glyph.size);
+                if space && let Some(previous) = last_box {
+                    sum += cursor + offset - previous;
+                    count += 1;
+                }
+                last_box = Some(cursor + offset + natural);
+                space = false;
+            }
+            cursor += glyph.x_advance.at(glyph.size) + left + right;
+        }
+        widest_space = widest_space.max(printed_space_ratio(&spaces, &mut extras));
+    }
+    if count < 2 { return None; }
+    // A common normalisation cancels in pairwise contrasts. It must not depend
+    // on whichever font/style happened to supply the paragraph's first space.
+    Some(((sum / count as f64 / unit).max(0.1).ln(), widest_space))
+}
+
+/// Word-space expansion excludes tracking. Match the geometry extractor's
+/// clamped median of non-space advances, with kerning treated as noise.
+fn printed_space_ratio(spaces: &[(f64, f64)], extras: &mut [f64]) -> f64 {
+    extras.sort_by(f64::total_cmp);
+    let track = if extras.is_empty() { 0.0 } else { extras[extras.len() / 2] }
+        .clamp(-0.02, 0.02);
+    spaces.iter().map(|&(advance, natural)| (advance - track) / natural)
+        .fold(0.0, f64::max)
+}
+
 /// The spacing class of a line with the given stretch ratio.
-fn fitness(metrics: &CostMetrics, ratio: f64) -> i8 {
+fn fitness(metrics: &CostMetrics, gap: f64) -> i8 {
     if metrics.contrast <= 0.0 {
         return 0;
     }
     let half = (FITNESS_SLOTS / 2) as f64;
-    (gap_log(metrics, ratio) / FITNESS_STEP).round().clamp(-half, half) as i8
+    (gap / FITNESS_STEP).round().clamp(-half, half) as i8
 }
 
 /// The table slot for an entry: spacing classes are kept apart only where the
@@ -1240,12 +1378,11 @@ fn contrast_cost(
     index: usize,
     pred_fit: i8,
     pred_gap: f64,
-    ratio: f64,
+    gap: f64,
 ) -> Cost {
     if metrics.contrast <= 0.0 || index == 0 || index >= shape {
         return 0.0;
     }
-    let gap = gap_log(metrics, ratio);
     let d = (gap - pred_fit as f64 * FITNESS_STEP).abs();
     let soft = metrics.contrast * ((d - CONTRAST_FREE).max(0.0) / FITNESS_STEP);
     // the hard step past ~1.58×, on the exact gaps
@@ -1539,6 +1676,10 @@ struct CostMetrics {
     /// The cost of a step of spacing contrast between a paragraph shape's lines
     /// (zero: not costed).
     contrast: f64,
+    /// Use printed gaps only in the bounded repair of a failing shape.
+    exact_gap: bool,
+    /// A common natural space for comparing mixed-style printed gaps.
+    gap_unit: Abs,
     /// How the word gap as printed (space and the letterspacing either side of
     /// it, relative to the natural space) grows per unit of positive and of
     /// negative stretch ratio.
@@ -1577,6 +1718,11 @@ impl CostMetrics {
             caps_factor: p.config.costs.capitalized().get().max(0.0),
             overstretch: p.config.costs.overstretch().get().max(0.0),
             contrast: CONTRAST_COST * p.config.costs.contrast().get().max(0.0),
+            exact_gap: false,
+            gap_unit: p.items.iter().find_map(|(_, item)| item.text().and_then(|t|
+                t.glyphs.iter().find(|g| g.c == ' ').and_then(|g|
+                    g.font.x_advance(g.glyph_id).map(|a| a.at(g.size)))))
+                .filter(|a| *a > Abs::zero()).unwrap_or(size / 4.0),
             gap_up: (limits.spacing().max.rel.get() - 1.0).max(0.0)
                 + 2.0 * limits.tracking().max.at(size).to_raw() / space,
             gap_down: (1.0 - limits.spacing().min.rel.get()).max(0.0)
@@ -1690,5 +1836,32 @@ where
             None => T::default(),
             Some(i) => self.summed[i],
         }
+    }
+}
+
+#[cfg(test)]
+mod shape_repair_tests {
+    use super::{ShapeQuality, printed_space_ratio};
+
+    #[test]
+    fn printed_space_expansion_excludes_tracking_and_keeps_the_worst_space() {
+        let spaces = [(0.32, 0.2), (0.30, 0.2)];
+        assert!((printed_space_ratio(&spaces, &mut [0.01, 0.02, 0.04]) - 1.5).abs() < 1e-9);
+        assert!((printed_space_ratio(&[(0.3, 0.2)], &mut []) - 1.5).abs() < 1e-9);
+        assert!((printed_space_ratio(&[(0.3, 0.2)], &mut [0.05]) - 1.4).abs() < 1e-9);
+    }
+
+    #[test]
+    fn repair_requires_real_improvement_without_a_new_spacing_failure() {
+        let before = ShapeQuality { contrast: 1, loose: 0, min_gap: 0.0, max_space: 1.5 };
+        let clean = ShapeQuality { contrast: 0, min_gap: -0.1, ..before };
+        assert!(clean.improves(before, 12, 12));
+        assert!(!before.improves(before, 12, 12));
+        assert!(!clean.improves(before, 13, 12));
+        assert!(!ShapeQuality { loose: 1, ..clean }.improves(before, 12, 12));
+        assert!(!ShapeQuality { min_gap: 0.64_f64.ln(), ..clean }.improves(before, 12, 12));
+        assert!(!ShapeQuality { max_space: 1.7, ..clean }.improves(before, 12, 12));
+        let tight = ShapeQuality { min_gap: 0.5_f64.ln(), ..before };
+        assert!(!ShapeQuality { min_gap: 0.49_f64.ln(), ..clean }.improves(tight, 12, 12));
     }
 }
