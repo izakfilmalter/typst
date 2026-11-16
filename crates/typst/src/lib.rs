@@ -136,7 +136,7 @@ fn compile_impl<T: Output>(
     // Lean history: keep only the previous document (the next iteration needs its
     // introspector). Older documents are kept solely for detailed non-convergence
     // diagnostics and cost a full layout each; set TYPST_FULL_HISTORY to keep them.
-    let lean = std::env::var_os("TYPST_FULL_HISTORY").is_none();
+    let mut lean = std::env::var_os("TYPST_FULL_HISTORY").is_none();
     let mut iterations = 0usize;
 
     // Relayout until all introspections stabilize.
@@ -190,6 +190,16 @@ fn compile_impl<T: Output>(
 
         iterations += 1;
         if lean && iterations >= MAX_ITERS {
+            // Bundle validation can observe changes that do not affect the
+            // actual introspection results. Retry with history so `analyze`
+            // can distinguish those false positives from genuine cycles.
+            // Keep the memory-saving path unchanged for paged book builds.
+            if T::target() == Target::Bundle {
+                history.clear();
+                iterations = 0;
+                lean = false;
+                continue;
+            }
             sink.extend_from_sink(subsink);
             sink.warn(warning!(
                 Span::detached(),
