@@ -8,7 +8,7 @@ use bitflags::{Flags, bitflags};
 use ecow::EcoString;
 use rustc_hash::{FxHashMap, FxHashSet};
 use typst::foundations::Target;
-use typst_pdf::PdfStandard;
+use typst::{Feature, Features};
 use typst_syntax::{is_id_continue, is_ident, is_newline};
 use unscanny::Scanner;
 
@@ -62,10 +62,10 @@ impl Display for Test {
 }
 
 /// A position in a file. This allows us to print errors that point to specific
-/// line numbers and create a clickable link in editors like VSCode.
+/// line numbers and create a clickable link in editors like VS Code.
 #[derive(Clone)]
 pub struct FilePos {
-    pub path: Arc<PathBuf>,
+    pub path: Arc<Path>,
     /// Line numbers are 1-indexed, so if this is zero we treat it as pointing
     /// to the file as a whole.
     pub line: usize,
@@ -87,15 +87,18 @@ bitflags! {
     struct AttrFlags: u16 {
         const LARGE = 1 << 0;
         const EMPTY = 1 << 1;
+        const TRACE = 1 << 2;
     }
 }
 
 /// The parsed and evaluated test attributes specified in the test header.
-#[derive(Debug, Default, Clone, Eq, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct Attrs {
     pub large: bool,
     pub empty: bool,
-    pub pdf_standard: Vec<PdfStandard>,
+    /// Whether to insert [`Tracepoint`]s as notes.
+    pub trace: bool,
+    pub features: Option<Features>,
     /// Tolerance for image comparisons. Render tests are not 100% reproducible.
     /// By default, we allow a byte difference of 1, but in rare cases, we need
     /// to increase it. This can for example happen due to cross-platform
@@ -150,8 +153,8 @@ impl TestStages {
     /// The union of the supplied stages and their implied stages.
     ///
     /// The `paged` target will test `render`, `pdf`, and `svg` by default.
-    pub fn with_implied(&self) -> TestStages {
-        let mut res = *self;
+    pub fn with_implied(self) -> TestStages {
+        let mut res = self;
         for flag in self.iter() {
             res |= bitflags::bitflags_match!(flag, {
                 TestStages::EVAL => TestStages::empty(),
@@ -172,8 +175,8 @@ impl TestStages {
     ///
     /// For example, the `pdf` output requires the `paged` target.
     /// And the `pdftags` output requires both `pdf` and `paged`.
-    pub fn with_required(&self) -> TestStages {
-        let mut res = *self;
+    pub fn with_required(self) -> TestStages {
+        let mut res = self;
         for flag in self.iter() {
             res |= bitflags::bitflags_match!(flag, {
                 TestStages::EVAL => TestStages::empty(),
@@ -193,8 +196,8 @@ impl TestStages {
     /// The union of the supplied stages and their sibling stages.
     ///
     /// See the tree in [`TestStages`].
-    pub fn with_siblings(&self) -> TestStages {
-        let mut res = *self;
+    pub fn with_siblings(self) -> TestStages {
+        let mut res = self;
         for flag in self.iter() {
             res |= bitflags::bitflags_match!(flag, {
                 TestStages::PAGED => TestStages::PAGED | TestStages::HTML | TestStages::BUNDLE,
@@ -323,7 +326,7 @@ impl TestOutput {
     }
 
     /// The sub directory inside the [`REF_PATH`] and [`STORE_PATH`].
-    pub const fn sub_dir(&self) -> &'static str {
+    pub const fn sub_dir(self) -> &'static str {
         match self {
             Self::Render => "render",
             Self::Pdf => "pdf",
@@ -335,7 +338,7 @@ impl TestOutput {
     }
 
     /// The file extension used for live output.
-    pub const fn live_extension(&self) -> &'static str {
+    pub const fn live_extension(self) -> &'static str {
         match self {
             Self::Render => "png",
             Self::Pdf => "pdf",
@@ -347,7 +350,7 @@ impl TestOutput {
     }
 
     /// The file extension used for file references.
-    pub const fn ref_extension(&self) -> &'static str {
+    pub const fn ref_extension(self) -> &'static str {
         match self {
             Self::Bundle => "txt",
             _ => self.live_extension(),
@@ -355,21 +358,23 @@ impl TestOutput {
     }
 
     /// The path at which the live output will be stored.
-    pub fn hash_path(&self, hash: HashedRef, name: &str) -> PathBuf {
+    pub fn hash_path(self, hash: HashedRef, name: &str) -> PathBuf {
         let ext = self.live_extension();
-        PathBuf::from(format!("{STORE_PATH}/by-hash/{hash}_{name}.{ext}"))
+        [STORE_PATH, "by-hash", format!("{hash}_{name}.{ext}").as_ref()]
+            .iter()
+            .collect()
     }
 
     /// The path at which a symlink to the [`Self::hash_path`] will be created
     /// for inspection.
-    pub fn live_path(&self, name: &str) -> PathBuf {
+    pub fn live_path(self, name: &str) -> PathBuf {
         let dir = self.sub_dir();
         let ext = self.live_extension();
         PathBuf::from(format!("{STORE_PATH}/{dir}/{name}.{ext}"))
     }
 
     /// The path at which file references will be saved.
-    pub fn file_ref_path(&self, name: &str) -> PathBuf {
+    pub fn file_ref_path(self, name: &str) -> PathBuf {
         let dir = self.sub_dir();
         let ext = self.ref_extension();
         PathBuf::from(format!("{REF_PATH}/{dir}/{name}.{ext}"))
@@ -382,7 +387,7 @@ impl TestOutput {
     }
 
     /// The output kind.
-    pub fn kind(&self) -> TestOutputKind {
+    pub fn kind(self) -> TestOutputKind {
         match self {
             TestOutput::Render | TestOutput::Bundle => TestOutputKind::File,
             TestOutput::Pdf => TestOutputKind::Hash(output::Pdf::INDEX),
@@ -578,7 +583,6 @@ impl Collector {
                     path,
                     line,
                 ));
-                continue;
             }
         }
 
@@ -589,7 +593,7 @@ impl Collector {
 /// Parses a single test file.
 struct Parser<'a> {
     collector: &'a mut Collector,
-    path: Arc<PathBuf>,
+    path: Arc<Path>,
     s: Scanner<'a>,
     test_start_line: usize,
     line: usize,
@@ -600,7 +604,7 @@ impl<'a> Parser<'a> {
     fn new(collector: &'a mut Collector, path: &'a Path, source: &'a str) -> Self {
         Self {
             collector,
-            path: Arc::new(path.to_owned()),
+            path: path.into(),
             s: Scanner::new(source),
             // Lines in files are 1-indexed.
             test_start_line: 1,
@@ -663,7 +667,7 @@ impl<'a> Parser<'a> {
             }
 
             let body = self.s.from(start);
-            let body = parse_test_body(pos, body, &mut self.collector.errors);
+            let body = parse_test_body(pos, &attrs, body, &mut self.collector.errors);
 
             self.collector.tests.push(Test { name, attrs, body });
         }
@@ -688,9 +692,8 @@ impl<'a> Parser<'a> {
     fn parse_attrs(&mut self) -> Attrs {
         let mut stages = TestStages::empty();
         let mut flags = AttrFlags::empty();
-        let mut pdf_standard = Vec::new();
+        let mut features = None;
         let mut tolerance = None;
-
         while !self.s.eat_if("---") {
             let attr_name = self.s.eat_while(is_id_continue);
             let mut attr_params = None;
@@ -709,23 +712,6 @@ impl<'a> Parser<'a> {
                 "paged" => self.set_attr(attr_name, &mut stages, TestStages::PAGED),
                 "pdf" => self.set_attr(attr_name, &mut stages, TestStages::PDF),
                 "pdftags" => self.set_attr(attr_name, &mut stages, TestStages::PDFTAGS),
-                "pdfstandard" => {
-                    let Some(param) = attr_params.take() else {
-                        self.error("expected parameter for `pdfstandard`");
-                        continue;
-                    };
-                    pdf_standard = param
-                        .split(',')
-                        .map(str::trim)
-                        .filter_map(|s| {
-                            serde_yaml::from_str(s)
-                                .inspect_err(|e| {
-                                    self.error(format!("unknown pdf standard `{s}`: {e}"))
-                                })
-                                .ok()
-                        })
-                        .collect();
-                }
                 "tolerance" => {
                     let Some(param) = attr_params.take() else {
                         self.error("expected parameter for `tolerance`");
@@ -740,6 +726,17 @@ impl<'a> Parser<'a> {
                 "bundle" => self.set_attr(attr_name, &mut stages, TestStages::BUNDLE),
                 "large" => self.set_attr(attr_name, &mut flags, AttrFlags::LARGE),
                 "empty" => self.set_attr(attr_name, &mut flags, AttrFlags::EMPTY),
+                "trace" => self.set_attr(attr_name, &mut flags, AttrFlags::TRACE),
+                "features" => {
+                    let Some(params) = attr_params.take() else {
+                        self.error("expected parameter for `features`");
+                        continue;
+                    };
+                    // Allow specifying an empty parameter list.
+                    features = Some(self.parse_attr_param_list(params, "feature", |s| {
+                        Feature::from_str(s).map_err(|()| "")
+                    }));
+                }
 
                 found => {
                     self.error(format!(
@@ -774,10 +771,39 @@ impl<'a> Parser<'a> {
         Attrs {
             large: flags.contains(AttrFlags::LARGE),
             empty: flags.contains(AttrFlags::EMPTY),
-            pdf_standard,
+            trace: flags.contains(AttrFlags::TRACE),
+            features,
             stages,
             tolerance,
         }
+    }
+
+    /// Parse a comma-separated attribute parameter list.
+    fn parse_attr_param_list<T, I, F, E>(
+        &mut self,
+        params: &str,
+        what: &str,
+        parse: F,
+    ) -> T
+    where
+        T: FromIterator<I> + Default,
+        F: Fn(&str) -> Result<I, E>,
+        E: Display,
+    {
+        // Allow specifying an empty parameter list.
+        if params.trim().is_empty() {
+            return T::default();
+        }
+
+        params
+            .split(',')
+            .map(str::trim)
+            .filter_map(|p| {
+                parse(p)
+                    .inspect_err(|e| self.error(format!("unknown {what} `{p}`: {e}")))
+                    .ok()
+            })
+            .collect()
     }
 
     /// Set an attribute flag and check for duplicates.
@@ -832,7 +858,7 @@ pub struct TestParseError {
 impl TestParseError {
     pub fn new(kind: impl Into<TestParseErrorKind>, path: &Path, line: usize) -> Self {
         Self {
-            pos: FilePos { path: Arc::new(path.to_owned()), line },
+            pos: FilePos { path: path.into(), line },
             kind: kind.into(),
         }
     }

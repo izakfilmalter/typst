@@ -2,14 +2,15 @@ use std::num::NonZeroUsize;
 
 use codex::styling::MathVariant;
 use ecow::EcoString;
+use typst_syntax::{LooselySpanned, Spanned};
 use typst_utils::NonZeroExt;
 
-use crate::diag::SourceResult;
+use crate::diag::{SourceResult, Trace, Tracepoint};
 use crate::engine::Engine;
 use crate::foundations::{
     Content, NativeElement, Packed, ShowSet, Smart, StyleChain, Styles, Synthesize, elem,
 };
-use crate::introspection::{Count, Counter, CounterUpdate, Locatable, Tagged};
+use crate::introspection::{Count, Counter, CounterUpdate};
 use crate::layout::{
     AlignElem, Alignment, BlockElem, OuterHAlignment, SpecificAlignment, VAlignment,
 };
@@ -44,7 +45,17 @@ use crate::text::{FontFamily, FontList, FontWeight, LocalName, Locale, TextElem}
 /// dollar signs to create an equation. Starting and ending the equation with
 /// whitespace lifts it into a separate block that is centered horizontally. For
 /// more details about math syntax, see the @math[main math page].
-#[elem(Locatable, Tagged, Synthesize, ShowSet, Count, LocalName, Refable, Outlinable)]
+#[elem(
+    since = "forever",
+    Locatable,
+    Tagged,
+    Synthesize,
+    ShowSet,
+    Count,
+    LocalName,
+    Refable,
+    Outlinable
+)]
 pub struct EquationElem {
     /// Whether the equation is displayed as a separate block.
     #[default(false)]
@@ -97,7 +108,7 @@ pub struct EquationElem {
     /// With @ratio, we get:
     /// $ F_n = floor(1 / sqrt(5) phi.alt^n) $
     /// ```
-    pub supplement: Smart<Option<Supplement>>,
+    pub supplement: LooselySpanned<Smart<Option<Supplement>>>,
 
     /// An alternative description of the mathematical equation.
     ///
@@ -166,16 +177,22 @@ impl Synthesize for Packed<EquationElem> {
         engine: &mut Engine,
         styles: StyleChain,
     ) -> SourceResult<()> {
-        let supplement = match self.as_ref().supplement.get_ref(styles) {
+        let sup = self.as_ref().supplement.get_ref(styles);
+        let supplement = match &sup.v {
             Smart::Auto => TextElem::packed(Self::local_name_in(styles)),
             Smart::Custom(None) => Content::empty(),
             Smart::Custom(Some(supplement)) => {
-                supplement.resolve(engine, styles, [self.clone().pack()])?
+                let point = Tracepoint::process::<EquationElem>;
+                supplement
+                    .resolve(engine, styles, [self.clone().pack()], sup.span)
+                    .trace(engine.world, point, self.span())?
             }
         };
 
-        self.supplement
-            .set(Smart::Custom(Some(Supplement::Content(supplement))));
+        self.supplement.set(Spanned {
+            span: supplement.span(),
+            v: Smart::Custom(Some(Supplement::Content(supplement))),
+        });
 
         self.locale = Some(Locale::get_in(styles));
 
@@ -204,9 +221,9 @@ impl ShowSet for Packed<EquationElem> {
 }
 
 impl Count for Packed<EquationElem> {
-    fn update(&self) -> Option<CounterUpdate> {
+    fn update(&self) -> Option<Spanned<CounterUpdate>> {
         (self.block.get(StyleChain::default()) && self.numbering().is_some())
-            .then(|| CounterUpdate::Step(NonZeroUsize::ONE))
+            .then(|| Spanned::new(CounterUpdate::Step(NonZeroUsize::ONE), self.span()))
     }
 }
 
@@ -217,7 +234,7 @@ impl LocalName for Packed<EquationElem> {
 impl Refable for Packed<EquationElem> {
     fn supplement(&self) -> Content {
         // After synthesis, this should always be custom content.
-        match self.supplement.get_cloned(StyleChain::default()) {
+        match self.supplement.get_cloned(StyleChain::default()).v {
             Smart::Custom(Some(Supplement::Content(content))) => content,
             _ => Content::empty(),
         }

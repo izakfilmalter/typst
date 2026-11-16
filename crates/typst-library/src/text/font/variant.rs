@@ -346,8 +346,9 @@ mod tests {
 
     #[test]
     fn test_font_stretch_debug() {
-        assert_eq!(FontStretch::EXPANDED.repr(), "125%")
+        assert_eq!(FontStretch::EXPANDED.repr(), "125%");
     }
+
 
     #[test]
     fn text_font_stretch_fmt() {

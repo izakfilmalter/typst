@@ -80,9 +80,8 @@ use crate::loading::{DataSource, Load};
 /// == Notes <notes>
 /// - In most cases, YAML numbers will be converted to floats or integers
 ///   depending on whether they are whole numbers. However, be aware that
-///   integers larger than 2#super[63]-1 or smaller than -2#super[63] will be
-///   converted to floating-point numbers, which may result in an approximative
-///   value.
+///   integers larger than $2^63-1$ or smaller than $-2^63$ will be converted to
+///   floating-point numbers, which may result in an approximative value.
 ///
 /// - Custom YAML tags are ignored, though the loaded value will still be
 ///   present.
@@ -92,7 +91,7 @@ use crate::loading::{DataSource, Load};
 ///
 /// - The `repr` function is @repr:debugging-only[for debugging purposes only],
 ///   and its output is not guaranteed to be stable across Typst versions.
-#[func(scope, title = "YAML")]
+#[func(scope, title = "YAML", since = "0.1.0")]
 pub fn yaml(
     engine: &mut Engine,
     /// A path to a YAML file or raw YAML bytes.
@@ -107,7 +106,7 @@ pub fn yaml(
 #[scope]
 impl yaml {
     /// Encode structured data into a YAML string.
-    #[func(title = "Encode YAML")]
+    #[func(title = "Encode YAML", since = "0.8.0")]
     pub fn encode(
         /// Value to be encoded.
         value: Spanned<Value>,

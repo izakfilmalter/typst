@@ -62,15 +62,15 @@ use crate::loading::{DataSource, Load};
 /// )
 ///
 /// == Notes <notes>
-/// - Be aware that CBOR integers larger than 2#super[63]-1 or smaller
-///   than -2#super[63] will be converted to floating point numbers, which may
-///   result in an approximative value.
+/// - Be aware that CBOR integers larger than $2^63-1$ or smaller than $-2^63$
+///   will be converted to floating point numbers, which may result in an
+///   approximative value.
 ///
 /// - CBOR tags are not supported, and an error will be thrown.
 ///
 /// - The `repr` function is @repr:debugging-only[for debugging purposes only],
 ///   and its output is not guaranteed to be stable across Typst versions.
-#[func(scope, title = "CBOR")]
+#[func(scope, title = "CBOR", since = "0.8.0")]
 pub fn cbor(
     engine: &mut Engine,
     /// A path to a CBOR file or raw CBOR bytes.
@@ -100,7 +100,7 @@ fn format_cbor_error(error: Error<std::io::Error>) -> LoadError {
 #[scope]
 impl cbor {
     /// Encode structured data into CBOR bytes.
-    #[func(title = "Encode CBOR")]
+    #[func(title = "Encode CBOR", since = "0.8.0")]
     pub fn encode(
         /// Value to be encoded.
         value: Spanned<Value>,
@@ -108,7 +108,7 @@ impl cbor {
         let Spanned { v: value, span } = value;
         let mut res = Vec::new();
         ciborium::into_writer(&value, &mut res)
-            .map(|_| Bytes::new(res))
+            .map(|()| Bytes::new(res))
             .map_err(|err| eco_format!("failed to encode value as CBOR ({err})"))
             .at(span)
     }

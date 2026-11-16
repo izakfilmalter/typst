@@ -4,8 +4,9 @@ use syn::parse::{Parse, ParseStream};
 use syn::{Attribute, Ident, Result};
 
 use crate::util::{
-    BareType, determine_name_and_title, documentation, foundations, kw, oneliner,
-    parse_flag, parse_string, parse_string_array,
+    BareType, Since, determine_name_and_title, documentation, foundations, kw, oneliner,
+    parse_flag, parse_key_value, parse_string, parse_string_array, quote_option,
+    remove_attrs,
 };
 
 /// Expand the `#[ty]` macro.
@@ -23,7 +24,7 @@ pub fn ty(stream: TokenStream, mut item: syn::Item) -> Result<TokenStream> {
         _ => bail!(item, "invalid type item"),
     };
     let ty = parse(meta, ident.clone(), attrs)?;
-    attrs.retain(|attr| !attr.path().is_ident("doc"));
+    remove_attrs(attrs, "doc");
     Ok(create(&ty, keep.then_some(&item)))
 }
 
@@ -49,6 +50,7 @@ struct Meta {
     cast: bool,
     name: Option<String>,
     title: Option<String>,
+    since: Option<Since>,
     keywords: Vec<String>,
 }
 
@@ -59,6 +61,7 @@ impl Parse for Meta {
             cast: parse_flag::<kw::cast>(input)?,
             name: parse_string::<kw::name>(input)?,
             title: parse_string::<kw::title>(input)?,
+            since: parse_key_value::<kw::since, Since>(input)?,
             keywords: parse_string_array::<kw::keywords>(input)?,
         })
     }
@@ -66,7 +69,7 @@ impl Parse for Meta {
 
 /// Parse details about the type from its definition.
 fn parse(meta: Meta, ident: Ident, attrs: &[Attribute]) -> Result<Type> {
-    let docs = documentation(attrs);
+    let docs = documentation(attrs)?;
     let (name, title) =
         determine_name_and_title(meta.name.clone(), meta.title.clone(), &ident, None)?;
     let long = title.to_lowercase();
@@ -75,10 +78,11 @@ fn parse(meta: Meta, ident: Ident, attrs: &[Attribute]) -> Result<Type> {
 
 /// Produce the output of the macro.
 fn create(ty: &Type, item: Option<&syn::Item>) -> TokenStream {
-    let Type { ident, name, long, title, docs, meta, .. } = ty;
+    let Type { ident, name, long, title, docs, meta } = ty;
     let Meta { keywords, .. } = meta;
     let def_site_key = ident.to_string();
     let oneliner = oneliner(docs);
+    let since = quote_option(&meta.since);
 
     let constructor = if meta.scope {
         quote! { <#ident as #foundations::NativeScope>::constructor() }
@@ -103,6 +107,7 @@ fn create(ty: &Type, item: Option<&syn::Item>) -> TokenStream {
             name: #name,
             long_name: #long,
             title: #title,
+            since: #since,
             docs: #docs,
             def_site: ::typst_utils::DefSite { path: file!(), key: #def_site_key },
             keywords: &[#(#keywords),*],

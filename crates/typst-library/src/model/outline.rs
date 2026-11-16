@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use comemo::Tracked;
 use smallvec::SmallVec;
-use typst_syntax::Span;
+use typst_syntax::{LooselySpanned, Span};
 use typst_utils::{Get, NonZeroExt};
 
 use crate::diag::{At, HintedStrResult, SourceResult, StrResult, bail, error};
@@ -13,15 +13,15 @@ use crate::foundations::{
     Resolve, ShowSet, Smart, StyleChain, Styles, cast, elem, func, scope, select_where,
 };
 use crate::introspection::{
-    Counter, CounterKey, Locatable, Location, Locator, LocatorLink,
-    PageNumberingIntrospection, QueryIntrospection, Tagged, Unqueriable,
+    Counter, CounterKey, Location, Locator, LocatorLink, PageNumberingIntrospection,
+    QueryIntrospection,
 };
 use crate::layout::{
     Abs, Axes, BlockBody, BlockElem, BoxElem, Dir, Em, Fr, HElem, Length, Region, Rel,
     RepeatElem, Sides,
 };
+use crate::model::PdfMarkerTag;
 use crate::model::{HeadingElem, NumberingPattern, ParElem, Refable};
-use crate::pdf::PdfMarkerTag;
 use crate::text::{LocalName, SpaceElem, TextElem};
 
 /// A table of contents, figures, or other elements.
@@ -147,7 +147,7 @@ use crate::text::{LocalName, SpaceElem, TextElem};
 /// = About ACME Corp.
 /// == History
 /// ```
-#[elem(scope, keywords = ["Table of Contents", "toc"], ShowSet, LocalName, Locatable, Tagged)]
+#[elem(scope, since = "forever", keywords = ["Table of Contents", "toc"], ShowSet, LocalName, Locatable, Tagged)]
 pub struct OutlineElem {
     /// The title of the outline.
     ///
@@ -240,7 +240,7 @@ pub struct OutlineElem {
     /// = Designing software components
     /// = Testing and integration
     /// ```
-    pub indent: Smart<OutlineIndent>,
+    pub indent: LooselySpanned<Smart<OutlineIndent>>,
 }
 
 #[scope]
@@ -433,7 +433,7 @@ impl OutlineIndent {
         let depth = level.get() - 1;
         match self {
             Self::Rel(length) => Ok(*length * depth as f64),
-            Self::Func(func) => func.call(engine, context, [depth])?.cast().at(span),
+            Self::Func(func) => func.call(engine, context, [depth], span),
         }
     }
 }
@@ -470,7 +470,14 @@ pub trait Outlinable: Refable {
 /// With show-set and show rules on outline entries, you can richly customize
 /// the outline's appearance. See the
 /// @outline:styling-the-outline[section on styling the outline] for details.
-#[elem(scope, name = "entry", title = "Outline Entry", Locatable, Tagged)]
+#[elem(
+    scope,
+    name = "entry",
+    title = "Outline Entry",
+    since = "0.6.0",
+    Locatable,
+    Tagged
+)]
 pub struct OutlineEntry {
     /// The nesting level of this outline entry. Starts at `{1}` for top-level
     /// entries.
@@ -529,7 +536,7 @@ impl OutlineEntry {
     /// indented, but the inner contents are simply offset from the prefix by
     /// the specified `gap`, rather than aligning outline-wide. For a visual
     /// explanation, see @outline.indent.
-    #[func(contextual)]
+    #[func(contextual, since = "0.13.0")]
     pub fn indented(
         &self,
         engine: &mut Engine,
@@ -566,7 +573,7 @@ impl OutlineEntry {
         let prefix_inset = prefix_width.map(|w| w + gap.resolve(styles));
 
         let indent = outline.indent.get_ref(styles);
-        let (base_indent, hanging_indent) = match &indent {
+        let (base_indent, hanging_indent) = match &indent.v {
             Smart::Auto => compute_auto_indents(
                 engine,
                 outline_loc,
@@ -576,7 +583,7 @@ impl OutlineEntry {
                 span,
             ),
             Smart::Custom(amount) => {
-                let base = amount.resolve(engine, context, self.level, span)?;
+                let base = amount.resolve(engine, context, self.level, indent.span)?;
                 (base, prefix_inset)
             }
         };
@@ -592,7 +599,7 @@ impl OutlineEntry {
             // can query for (within `compute_auto_indent`) to align
             // themselves).
             let mut seq = Vec::with_capacity(5);
-            if indent.is_auto() {
+            if indent.v.is_auto() {
                 seq.push(PrefixInfo::new(outline_loc, self.level, prefix_inset).pack());
             }
 
@@ -626,7 +633,7 @@ impl OutlineEntry {
     /// This also appends the element's supplement in case of figures or
     /// equations. For instance, it would output `1.1` for a heading, but
     /// `Figure 1` for a figure, as is usual for outlines.
-    #[func(contextual)]
+    #[func(contextual, since = "0.13.0")]
     pub fn prefix(
         &self,
         engine: &mut Engine,
@@ -646,7 +653,7 @@ impl OutlineEntry {
     /// Creates the default inner content of the entry.
     ///
     /// This includes the body, the fill, and page number.
-    #[func(contextual)]
+    #[func(contextual, since = "0.13.0")]
     pub fn inner(
         &self,
         engine: &mut Engine,
@@ -661,14 +668,14 @@ impl OutlineEntry {
     /// The content which is displayed in place of the referred element at its
     /// entry in the outline. For a heading, this is its @heading.body[`body`];
     /// for a figure a caption and for equations, it is empty.
-    #[func]
+    #[func(since = "0.13.0")]
     pub fn body(&self) -> StrResult<Content> {
         Ok(self.outlinable()?.body())
     }
 
     /// The page number of this entry's element, formatted with the numbering
     /// set for the referenced page.
-    #[func(contextual)]
+    #[func(contextual, since = "0.13.0")]
     pub fn page(
         &self,
         engine: &mut Engine,

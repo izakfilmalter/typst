@@ -8,6 +8,7 @@ use unicode_script::{Script, UnicodeScript};
 use unicode_segmentation::UnicodeSegmentation;
 use unscanny::Scanner;
 
+use crate::ast::NonDecimalBase;
 use crate::{SyntaxKind, SyntaxMode, SyntaxNode};
 
 /// An iterator over a source code string which returns tokens.
@@ -18,23 +19,15 @@ pub(super) struct Lexer<'s> {
     /// The mode the lexer is in. This determines which kinds of tokens it
     /// produces.
     mode: SyntaxMode,
-    /// Whether the last token contained a newline.
-    newline: bool,
     /// An error plus hints for the current token being produced. This is always
     /// `None` between calls to [`Lexer::next`].
     error: Option<(EcoString, EcoVec<EcoString>)>,
 }
 
 impl<'s> Lexer<'s> {
-    /// Create a new lexer with the given mode and a prefix to offset column
-    /// calculations.
+    /// Create a new lexer with the given mode.
     pub fn new(text: &'s str, mode: SyntaxMode) -> Self {
-        Self {
-            s: Scanner::new(text),
-            mode,
-            newline: false,
-            error: None,
-        }
+        Self { s: Scanner::new(text), mode, error: None }
     }
 
     /// Get the current lexing mode.
@@ -56,11 +49,6 @@ impl<'s> Lexer<'s> {
     /// Jump to the given index in the string.
     pub fn jump(&mut self, index: usize) {
         self.s.jump(index);
-    }
-
-    /// Whether the last token contained a newline.
-    pub fn newline(&self) -> bool {
-        self.newline
     }
 
     /// The number of characters until the most recent newline from an index.
@@ -95,7 +83,6 @@ impl Lexer<'_> {
         debug_assert!(self.error.is_none());
         let start = self.s.cursor();
 
-        self.newline = false;
         let kind = match self.s.eat() {
             Some(c) if is_space(c, self.mode) => self.whitespace(start, c),
             Some('#') if start == 0 && self.s.eat_if('!') => self.shebang(),
@@ -139,11 +126,12 @@ impl Lexer<'_> {
             _ => count_newlines(self.s.from(start)),
         };
 
-        self.newline = newlines > 0;
         if self.mode == SyntaxMode::Markup && newlines >= 2 {
             SyntaxKind::Parbreak
+        } else if newlines > 0 {
+            SyntaxKind::SpaceWithNewline
         } else {
-            SyntaxKind::Space
+            SyntaxKind::SpaceNoNewline
         }
     }
 
@@ -705,7 +693,6 @@ impl Lexer<'_> {
             '~' if self.s.eat_if('>') => SyntaxKind::MathShorthand,
             '*' | '-' | '~' => SyntaxKind::MathShorthand,
 
-            '.' => SyntaxKind::Dot,
             ',' => SyntaxKind::Comma,
             ';' => SyntaxKind::Semicolon,
 
@@ -723,37 +710,82 @@ impl Lexer<'_> {
                 SyntaxKind::MathPrimes
             }
 
-            // We lex delimiters as `{Left,Right}{Brace,Paren}` and convert back
-            // to `MathText` or `MathShorthand` in the parser.
+            // Delimiters have two special cases:
+            // 1. We lex parentheses as `{Left,Right}Paren` and convert back to
+            //    `MathOpening`/`MathClosing` in the parser if not used for an
+            //    actual function call.
+            // 2. The `[|` and `|]` shorthands become `MathShorthand` nested
+            //    inside `MathOpening` or `MathClosing`.
             '(' => SyntaxKind::LeftParen,
             ')' => SyntaxKind::RightParen,
-            // TODO: We may instead want to add `MathOpening` and `MathClosing`
-            // kinds for these.
-            '[' if self.s.eat_if('|') => SyntaxKind::LeftBrace,
-            '|' if self.s.eat_if(']') => SyntaxKind::RightBrace,
+            '[' if self.s.eat_if('|') => {
+                let kind = SyntaxKind::MathOpening;
+                let leaf =
+                    SyntaxNode::leaf(SyntaxKind::MathShorthand, self.s.from(start));
+                let node = SyntaxNode::inner(kind, vec![leaf]);
+                return (kind, Some(node));
+            }
+            '|' if self.s.eat_if(']') => {
+                let kind = SyntaxKind::MathClosing;
+                let leaf =
+                    SyntaxNode::leaf(SyntaxKind::MathShorthand, self.s.from(start));
+                let node = SyntaxNode::inner(kind, vec![leaf]);
+                return (kind, Some(node));
+            }
             c if default_math_class(c) == Some(MathClass::Opening) => {
-                SyntaxKind::LeftBrace
+                SyntaxKind::MathOpening
             }
             c if default_math_class(c) == Some(MathClass::Closing) => {
-                SyntaxKind::RightBrace
+                SyntaxKind::MathClosing
             }
 
-            // Identifiers.
-            c if is_math_id_start(c) && self.s.at(is_math_id_continue) => {
-                self.s.eat_while(is_math_id_continue);
-                let (last_index, _) =
-                    self.s.from(start).grapheme_indices(true).next_back().unwrap();
-                if last_index == 0 {
-                    // If this was just a single grapheme.
-                    SyntaxKind::MathText
+            // Numbers.
+            c if c.is_numeric() => {
+                self.s.eat_while(char::is_numeric);
+                let mut s = self.s;
+                if s.eat_if('.') && !s.eat_while(char::is_numeric).is_empty() {
+                    self.s = s;
+                }
+                SyntaxKind::MathNumber
+            }
+
+            // An identifier, a single letter, or a symbol.
+            c => {
+                let char_len = c.len_utf8();
+                // First get the length of an entire identifier and of the
+                // initial grapheme. Also move `self.s` forward to match the
+                // identifier.
+                let identifier_len = if is_math_id_start(c) {
+                    char_len + self.s.eat_while(is_math_id_continue).len()
                 } else {
+                    0
+                };
+                let after_start = self.s.get(start..self.s.string().len());
+                let single_grapheme_len =
+                    after_start.graphemes(true).next().map_or(char_len, str::len);
+
+                // Determine the syntax kind by comparing lengths:
+                if identifier_len > single_grapheme_len {
+                    // More than one grapheme, we lex this as an identifier,
+                    // potentially with a field access. We do not try to handle
+                    // any non-identifier characters following that would attach
+                    // as a grapheme cluster to the final character.
                     let (kind, node) = self.math_ident_or_field(start);
                     return (kind, Some(node));
+                } else if identifier_len == single_grapheme_len {
+                    // We treat valid identifiers with just one grapheme as
+                    // single letters.
+                    SyntaxKind::MathLetter
+                } else {
+                    // Non-identifier graphemes are treated as symbols. Note: It
+                    // is possible for `identifier_len != 0` here due to
+                    // characters like U+20DD COMBINING ENCLOSING CIRCLE that
+                    // have the Unicode `Grapheme_Cluster_Break=Extend|Prepend`
+                    // properties but not the `xid_continue` property.
+                    self.s.jump(start + single_grapheme_len);
+                    SyntaxKind::MathSymbol
                 }
             }
-
-            // Other math atoms.
-            _ => self.math_text(start, c),
         };
         (kind, None)
     }
@@ -784,26 +816,6 @@ impl Lexer<'_> {
         } else {
             None
         }
-    }
-
-    fn math_text(&mut self, start: usize, c: char) -> SyntaxKind {
-        // Keep numbers and grapheme clusters together.
-        if c.is_numeric() {
-            self.s.eat_while(char::is_numeric);
-            let mut s = self.s;
-            if s.eat_if('.') && !s.eat_while(char::is_numeric).is_empty() {
-                self.s = s;
-            }
-        } else {
-            let len = self
-                .s
-                .get(start..self.s.string().len())
-                .graphemes(true)
-                .next()
-                .map_or(0, str::len);
-            self.s.jump(start + len);
-        }
-        SyntaxKind::MathText
     }
 
     /// Handle named arguments in math function call.
@@ -963,14 +975,14 @@ impl Lexer<'_> {
     fn number(&mut self, start: usize, first_c: char) -> SyntaxKind {
         // Handle alternative integer bases.
         let base = match first_c {
-            '0' if self.s.eat_if('b') => 2,
-            '0' if self.s.eat_if('o') => 8,
-            '0' if self.s.eat_if('x') => 16,
-            _ => 10,
+            '0' if self.s.eat_if('x') => Some(NonDecimalBase::Hex),
+            '0' if self.s.eat_if('o') => Some(NonDecimalBase::Octal),
+            '0' if self.s.eat_if('b') => Some(NonDecimalBase::Binary),
+            _ => None,
         };
 
         // Read the initial digits.
-        if base == 16 {
+        if base == Some(NonDecimalBase::Hex) {
             self.s.eat_while(char::is_ascii_alphanumeric);
         } else {
             self.s.eat_while(char::is_ascii_digit);
@@ -978,7 +990,7 @@ impl Lexer<'_> {
 
         // Read floating point digits and exponents.
         let mut is_float = false;
-        if base == 10 {
+        if base.is_none() {
             // Read digits following a dot. Make sure not to confuse a spread
             // operator or a method call for the decimal separator.
             if first_c == '.' {
@@ -1002,37 +1014,24 @@ impl Lexer<'_> {
         let number = self.s.from(start);
         let suffix = self.s.eat_while(|c: char| c.is_ascii_alphanumeric() || c == '%');
 
-        // Parse large integer literals as floats
-        if base == 10
-            && !is_float
-            && let Err(e) = i64::from_str_radix(number, base)
-            && matches!(e.kind(), IntErrorKind::PosOverflow | IntErrorKind::NegOverflow)
-            && number.parse::<f64>().is_ok()
-        {
-            is_float = true;
-        }
-
         let mut suffix_result = match suffix {
             "" => Ok(None),
             "pt" | "mm" | "cm" | "in" | "deg" | "rad" | "em" | "fr" | "%" => Ok(Some(())),
             _ => Err(eco_format!("invalid number suffix: `{suffix}`")),
         };
 
-        let number_result = if is_float && number.parse::<f64>().is_err() {
-            // The only invalid case should be when a float lacks digits after
-            // the exponent: e.g. `1.2e`, `2.3E-`, or `1EM`.
-            Err(eco_format!("invalid floating point number: `{number}`"))
-        } else if base == 10 {
-            Ok(())
-        } else {
-            let name = match base {
-                2 => "binary",
-                8 => "octal",
-                16 => "hexadecimal",
-                _ => unreachable!(),
-            };
+        let number_result = if is_float {
+            if number.parse::<f64>().is_err() {
+                // The only invalid case should be when a float lacks digits after
+                // the exponent: e.g. `1.2e`, `2.3E-`, or `1EM`.
+                Err(eco_format!("invalid floating point number: `{number}`"))
+            } else {
+                Ok(())
+            }
+        } else if let Some(non_decimal) = base {
+            let name = non_decimal.name();
             // The index `[2..]` skips the leading `0b`/`0o`/`0x`.
-            match i64::from_str_radix(&number[2..], base) {
+            match i64::from_str_radix(&number[2..], non_decimal as u32) {
                 Ok(_) if suffix.is_empty() => Ok(()),
                 Ok(value) => {
                     if suffix_result.is_ok() {
@@ -1044,10 +1043,22 @@ impl Lexer<'_> {
                 }
                 Err(e) if *e.kind() == IntErrorKind::Empty => Err(eco_format!(
                     "expected a{} {name} number",
-                    if base == 8 { "n" } else { "" },
+                    if non_decimal == NonDecimalBase::Octal { "n" } else { "" },
                 )),
-                Err(_) => Err(eco_format!("invalid {name} number: `{number}`")),
+                Err(_) if suffix_result.is_err() => {
+                    // We're already erroring, tell them about the invalid
+                    // integer first.
+                    Err(eco_format!("invalid {name} number: `{number}`"))
+                }
+                // Invalid digits and positive overflow errors are handled in
+                // the AST.
+                Err(_) => Ok(()),
             }
+        } else {
+            // Decimal integer errors are handled in the AST. Note that
+            // too-large decimal integers that have suffixes will be silently
+            // treated as floats.
+            Ok(())
         };
 
         // Return our number or write an error with helpful hints.
@@ -1130,7 +1141,8 @@ impl ScannerExt for Scanner<'_> {
     }
 }
 
-/// Whether a character will become a [`SyntaxKind::Space`] token.
+/// Whether a character will become a space token, either
+/// [`SyntaxKind::SpaceNoNewline`] or [`SyntaxKind::SpaceWithNewline`].
 #[inline]
 fn is_space(character: char, mode: SyntaxMode) -> bool {
     match mode {

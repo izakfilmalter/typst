@@ -11,7 +11,9 @@ use crate::layout::Abs;
 /// Defines how the remaining space in a layout is distributed.
 ///
 /// Each fractionally sized element gets space based on the ratio of its
-/// fraction to the sum of all fractions.
+/// fraction to the sum of all fractions. If some fractions are negative, the
+/// same logic applies, so elements with sign opposite the total sum will have
+/// negative width.
 ///
 /// For more details, also see the @h and @v functions and the
 /// @grid[`grid` function].
@@ -20,7 +22,7 @@ use crate::layout::Abs;
 /// ```example
 /// Left #h(1fr) Left-ish #h(2fr) Right
 /// ```
-#[ty(cast, name = "fraction")]
+#[ty(cast, name = "fraction", since = "forever")]
 #[derive(Default, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Fr(Scalar);
 
@@ -54,7 +56,7 @@ impl Fr {
     pub fn share(self, total: Self, remaining: Abs) -> Abs {
         let ratio = self / total;
         if ratio.is_finite() && remaining.is_finite() {
-            (ratio * remaining).max(Abs::zero())
+            ratio * remaining.max(Abs::zero())
         } else {
             Abs::zero()
         }

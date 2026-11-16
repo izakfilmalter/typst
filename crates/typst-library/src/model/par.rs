@@ -1,4 +1,5 @@
 use ecow::eco_format;
+use typst_syntax::Spanned;
 use typst_utils::singleton;
 
 use crate::diag::{HintedStrResult, SourceResult, StrResult, bail};
@@ -8,7 +9,7 @@ use crate::foundations::{
     IntoValue, NativeElement, Packed, Reflect, Smart, Unlabellable, Value, cast, dict,
     elem, scope,
 };
-use crate::introspection::{Count, CounterUpdate, Locatable, Tagged, Unqueriable};
+use crate::introspection::{Count, CounterUpdate};
 use crate::layout::{Abs, Em, HAlignment, Length, OuterHAlignment, Ratio, Rel};
 use crate::model::Numbering;
 
@@ -95,7 +96,7 @@ use crate::model::Numbering;
 /// let $a$ be the smallest of the
 /// three integers. Then, we ...
 /// ```
-#[elem(scope, title = "Paragraph", Locatable, Tagged)]
+#[elem(scope, title = "Paragraph", since = "forever", Locatable, Tagged)]
 pub struct ParElem {
     /// The spacing between lines.
     ///
@@ -711,7 +712,7 @@ pub struct FirstLineIndent {
 cast! {
     FirstLineIndent,
     self => Value::Dict(self.into()),
-    amount: Length => Self { amount: Some(amount), all: Default::default() },
+    amount: Length => Self { amount: Some(amount), all: None },
     mut dict: Dict => {
         // Get a value by key, accepting either non-existence or something
         // convertible to type T.
@@ -754,10 +755,7 @@ impl FirstLineIndent {
 
 impl Default for FirstLineIndent {
     fn default() -> Self {
-        Self {
-            amount: Some(Default::default()),
-            all: Some(Default::default()),
-        }
+        Self { amount: Some(Length::default()), all: Some(false) }
     }
 }
 
@@ -788,7 +786,7 @@ impl Fold for FirstLineIndent {
 /// = Syntax <syntax>
 /// Instead of calling this function, you can insert a blank line into your
 /// markup to create a paragraph break.
-#[elem(title = "Paragraph Break", Unlabellable)]
+#[elem(title = "Paragraph Break", since = "forever", Unlabellable)]
 pub struct ParbreakElem {}
 
 impl ParbreakElem {
@@ -853,7 +851,7 @@ impl Unlabellable for Packed<ParbreakElem> {}
 /// @par.line.number-margin[margin]. In addition, you can control whether the
 /// numbering is reset on each page through the
 /// @par.line.numbering-scope[`numbering-scope`] option.
-#[elem(name = "line", title = "Paragraph Line", keywords = ["line numbering"], Construct, Locatable)]
+#[elem(name = "line", title = "Paragraph Line", since = "0.12.0", keywords = ["line numbering"], Construct, Locatable)]
 pub struct ParLine {
     /// How to number each line. Accepts a
     /// @numbering[numbering pattern or function] taking a single number.
@@ -1027,7 +1025,7 @@ impl Construct for ParLineMarker {
 }
 
 impl Count for Packed<ParLineMarker> {
-    fn update(&self) -> Option<CounterUpdate> {
+    fn update(&self) -> Option<Spanned<CounterUpdate>> {
         // The line counter must be updated manually by the root flow.
         None
     }

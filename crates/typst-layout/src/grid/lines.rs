@@ -3,6 +3,7 @@ use std::sync::Arc;
 use typst_library::foundations::{AlternativeFold, Fold};
 use typst_library::layout::Abs;
 use typst_library::layout::grid::resolve::{CellGrid, Line, Repeatable};
+use typst_library::layout::resolve::GridStroke;
 use typst_library::visualize::Stroke;
 
 use super::RowPiece;
@@ -64,13 +65,14 @@ pub struct LineSegment {
 /// in which case a new segment should be drawn after the merged cell(s), even
 /// if it would have the same stroke as the previous one.
 ///
-/// Regarding priority, the function should return a priority of ExplicitLine
+/// Regarding priority, the function should return a priority of `ExplicitLine`
 /// when the user-defined line's stroke at the current position isn't None
 /// (note that it is passed by parameter to the function). When it is None, the
-/// function should return a priority of CellStroke if the stroke returned was
+/// function should return a priority of `CellStroke` if the stroke returned was
 /// given or affected by a per-cell override of the grid's global stroke.
 /// When that isn't the case, the returned stroke was entirely provided by the
-/// grid's global stroke, and thus a priority of GridStroke should be returned.
+/// grid's global stroke, and thus a priority of `GridStroke` should be
+/// returned.
 ///
 /// Note that we assume that the tracks are sorted according to ascending
 /// number, and they must be iterable over pairs of (number, size). For
@@ -88,7 +90,7 @@ where
             &CellGrid,
             usize,
             usize,
-            Option<Option<Arc<Stroke<Abs>>>>,
+            GridStroke<Abs>,
         ) -> Option<(Arc<Stroke<Abs>>, StrokePriority)>
         + 'grid,
     I: IntoIterator<Item = (usize, Abs)>,
@@ -275,7 +277,7 @@ pub fn vline_stroke_at_row(
     grid: &CellGrid,
     x: usize,
     y: usize,
-    stroke: Option<Option<Arc<Stroke<Abs>>>>,
+    stroke: GridStroke<Abs>,
 ) -> Option<(Arc<Stroke<Abs>>, StrokePriority)> {
     // When the vline isn't at the border, we need to check if a colspan would
     // be present between columns 'x' and 'x-1' at row 'y', and thus overlap
@@ -391,7 +393,7 @@ pub fn vline_stroke_at_row(
 ///
 /// This function assumes columns are sorted by increasing `x`, and rows are
 /// sorted by increasing `y`.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub fn hline_stroke_at_column(
     grid: &CellGrid,
     rows: &[RowPiece],
@@ -400,7 +402,7 @@ pub fn hline_stroke_at_column(
     in_last_region: bool,
     y: usize,
     x: usize,
-    stroke: Option<Option<Arc<Stroke<Abs>>>>,
+    stroke: GridStroke<Abs>,
 ) -> Option<(Arc<Stroke<Abs>>, StrokePriority)> {
     // When the hline isn't at the border, we need to check if a rowspan
     // would be present between rows 'y' and 'y-1' at column 'x', and thus
@@ -1188,7 +1190,7 @@ mod test {
             .rows
             .iter()
             .enumerate()
-            .map(|(y, _)| RowPiece { height: Abs::pt(f64::from(2u32.pow(y as u32))), y })
+            .map(|(y, _)| RowPiece { height: Abs::pt(f64::from(2_u32.pow(y as u32))), y })
             .collect::<Vec<_>>();
         let expected_hline_splits = &[
             // top border
@@ -1295,7 +1297,7 @@ mod test {
             .rows
             .iter()
             .enumerate()
-            .map(|(y, _)| RowPiece { height: Abs::pt(f64::from(2u32.pow(y as u32))), y })
+            .map(|(y, _)| RowPiece { height: Abs::pt(f64::from(2_u32.pow(y as u32))), y })
             .collect::<Vec<_>>();
         let expected_hline_splits = &[
             // top border
@@ -1484,7 +1486,7 @@ mod test {
             .iter()
             .enumerate()
             .filter(|(y, _)| *y != 3)
-            .map(|(y, _)| RowPiece { height: Abs::pt(f64::from(2u32.pow(y as u32))), y })
+            .map(|(y, _)| RowPiece { height: Abs::pt(f64::from(2_u32.pow(y as u32))), y })
             .collect::<Vec<_>>();
 
         // Hline above row 4 is no longer blocked, since the rowspan is now

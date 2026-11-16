@@ -1,4 +1,5 @@
 use comemo::Track;
+use typst_syntax::{LooselySpanned, Span, Spanned};
 
 use crate::diag::{SourceResult, bail};
 use crate::engine::Engine;
@@ -6,7 +7,6 @@ use crate::foundations::{
     Array, Content, Context, Depth, Func, NativeElement, Packed, Smart, StyleChain,
     Styles, Value, cast, elem, scope,
 };
-use crate::introspection::{Locatable, Tagged};
 use crate::layout::{Alignment, Em, HAlignment, Length};
 use crate::text::TextElem;
 
@@ -41,7 +41,7 @@ use crate::text::TextElem;
 /// followed by a space to create a list item. A list item can contain multiple
 /// paragraphs and other block-level content. All content that is indented more
 /// than an item's marker becomes part of that item.
-#[elem(scope, title = "Bullet List", Locatable, Tagged)]
+#[elem(scope, title = "Bullet List", since = "forever", Locatable, Tagged)]
 pub struct ListElem {
     /// Defines the default @list.spacing[spacing] of the list. If it is
     /// `{false}`, the items are spaced apart with
@@ -85,15 +85,15 @@ pub struct ListElem {
     ///   - Items
     /// - Items
     /// ```
-    #[default(ListMarker::Content(vec![
+    #[default(Spanned::detached(ListMarker::Content(vec![
         // These are all available in the default font, vertically centered, and
         // roughly of the same size (with the last one having slightly lower
         // weight because it is not filled).
         TextElem::packed('\u{2022}'), // Bullet
         TextElem::packed('\u{2023}'), // Triangular Bullet
         TextElem::packed('\u{2013}'), // En-dash
-    ]))]
-    pub marker: ListMarker,
+    ])))]
+    pub marker: LooselySpanned<ListMarker>,
 
     /// The indent of each item.
     pub indent: Length,
@@ -164,7 +164,7 @@ impl ListElem {
 }
 
 /// A bullet list item.
-#[elem(name = "item", title = "Bullet List Item", Tagged)]
+#[elem(name = "item", title = "Bullet List Item", since = "0.4.0", Tagged)]
 pub struct ListItem {
     /// The item's body.
     #[required]
@@ -190,14 +190,16 @@ impl ListMarker {
         engine: &mut Engine,
         styles: StyleChain,
         depth: usize,
+        span: Span,
     ) -> SourceResult<Content> {
         Ok(match self {
             Self::Content(list) => {
                 list.get(depth % list.len()).cloned().unwrap_or_default()
             }
-            Self::Func(func) => func
-                .call(engine, Context::new(None, Some(styles)).track(), [depth])?
-                .display(),
+            Self::Func(func) => {
+                let context = Context::new(None, Some(styles));
+                func.call::<Value>(engine, context.track(), [depth], span)?.display()
+            }
         })
     }
 }

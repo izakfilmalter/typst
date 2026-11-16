@@ -47,7 +47,7 @@ pub fn discover_fonts(args: &FontArgs) -> FontStore {
         fonts.extend(fonts::embedded());
     }
 
-    for path in &args.font_paths {
+    for path in args.font_paths.iter().flatten() {
         fonts.extend(fonts::scan(path));
     }
 
@@ -70,7 +70,7 @@ fn write_variant(
     let marker = if last { '└' } else { '├' };
     let pad = if last { "     " } else { "  │  " };
 
-    let mut axes = info.axes.to_vec();
+    let mut axes = info.axes.clone();
     axes.sort_by_key(|axis| StandardAxes::order(axis.tag));
 
     if axes.is_empty() {

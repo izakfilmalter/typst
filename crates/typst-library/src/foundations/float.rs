@@ -17,25 +17,34 @@ use crate::layout::Ratio;
 ///
 /// You can convert a value to a float with this type's constructor.
 ///
-/// NaN and positive infinity are available as `{float.nan}` and `{float.inf}`
-/// respectively.
-///
 /// = Example <example>
 /// ```example
 /// #3.14 \
 /// #1e4 \
 /// #(10 / 4)
 /// ```
-#[ty(scope, cast, name = "float")]
+#[ty(scope, cast, name = "float", since = "forever")]
 type f64;
 
 #[scope(ext)]
 impl f64 {
-    /// Positive infinity.
+    /// Infinity ($+oo$) as a value.
+    ///
+    /// This value is greater than every real number.
+    ///
+    /// Negative infinity ($-oo$) can be obtained by negating this:
+    /// `{-float.inf}`.
+    ///
+    /// ```example
+    /// #(9999999 < float.inf) \
+    /// #(-float.inf < -9999999)
+    /// ```
+    #[constant(title = "Infinity", since = "0.12.0")]
     const INF: f64 = f64::INFINITY;
 
     /// A NaN value, as defined by the
-    /// [IEEE 754 standard](https://en.wikipedia.org/wiki/IEEE_754).
+    /// #link("https://en.wikipedia.org/wiki/IEEE_754")[IEEE 754 standard].
+    #[constant(title = "NaN", since = "0.12.0")]
     const NAN: f64 = f64::NAN;
 
     /// Converts a value to a float.
@@ -56,7 +65,7 @@ impl f64 {
     /// #float("2.7") \
     /// #float("1e5")
     /// ```
-    #[func(constructor)]
+    #[func(constructor, since = "forever")]
     pub fn construct(
         /// The value that should be converted to a float.
         value: ToFloat,
@@ -67,14 +76,14 @@ impl f64 {
     /// Checks if a float is not a number.
     ///
     /// In IEEE 754, more than one bit pattern represents a NaN. This function
-    /// returns `true` if the float is any of those bit patterns.
+    /// returns `{true}` if the float is any of those bit patterns.
     ///
     /// ```example
     /// #float.is-nan(0) \
     /// #float.is-nan(1) \
     /// #float.is-nan(float.nan)
     /// ```
-    #[func]
+    #[func(title = "Is NaN", since = "0.11.0")]
     pub fn is_nan(self) -> bool {
         f64::is_nan(self)
     }
@@ -89,7 +98,7 @@ impl f64 {
     /// #float.is-infinite(1) \
     /// #float.is-infinite(float.inf)
     /// ```
-    #[func]
+    #[func(since = "0.11.0")]
     pub fn is_infinite(self) -> bool {
         f64::is_infinite(self)
     }
@@ -98,7 +107,7 @@ impl f64 {
     ///
     /// - If the number is positive (including `{+0.0}`), returns `{1.0}`.
     /// - If the number is negative (including `{-0.0}`), returns `{-1.0}`.
-    /// - If the number is NaN, returns `{float.nan}`.
+    /// - If the number is NaN, returns @float.nan.
     ///
     /// ```example
     /// #(5.0).signum() \
@@ -106,7 +115,7 @@ impl f64 {
     /// #(0.0).signum() \
     /// #float.nan.signum()
     /// ```
-    #[func]
+    #[func(since = "0.11.0")]
     pub fn signum(self) -> f64 {
         f64::signum(self)
     }
@@ -117,7 +126,7 @@ impl f64 {
     /// #float.from-bytes(bytes((0, 0, 0, 0, 0, 0, 240, 63))) \
     /// #float.from-bytes(bytes((63, 240, 0, 0, 0, 0, 0, 0)), endian: "big")
     /// ```
-    #[func]
+    #[func(since = "0.12.0")]
     pub fn from_bytes(
         /// The bytes that should be converted to a float.
         ///
@@ -137,13 +146,13 @@ impl f64 {
                 Endianness::Little => f64::from_le_bytes(buffer),
                 Endianness::Big => f64::from_be_bytes(buffer),
             });
-        };
+        }
         if let Ok(buffer) = <[u8; 4]>::try_from(bytes.as_ref()) {
             return Ok(match endian {
                 Endianness::Little => f32::from_le_bytes(buffer),
                 Endianness::Big => f32::from_be_bytes(buffer),
             } as f64);
-        };
+        }
 
         bail!("bytes must have a length of 4 or 8");
     }
@@ -154,7 +163,7 @@ impl f64 {
     /// #array(1.0.to-bytes(endian: "big")) \
     /// #array(1.0.to-bytes())
     /// ```
-    #[func]
+    #[func(since = "0.12.0")]
     pub fn to_bytes(
         self,
         /// The endianness of the conversion.

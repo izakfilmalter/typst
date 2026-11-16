@@ -88,16 +88,15 @@ use crate::loading::{DataSource, Load};
 /// == Notes <notes>
 /// - In most cases, JSON numbers will be converted to floats or integers
 ///   depending on whether they are whole numbers. However, be aware that
-///   integers larger than 2#super[63]-1 or smaller than -2#super[63] will be
-///   converted to floating-point numbers, which may result in an approximative
-///   value.
+///   integers larger than $2^63-1$ or smaller than $-2^63$ will be converted to
+///   floating-point numbers, which may result in an approximative value.
 ///
 /// - Bytes are not encoded as JSON arrays for performance and readability
 ///   reasons. Consider using @cbor.encode for binary data.
 ///
 /// - The `repr` function is @repr:debugging-only[for debugging purposes only],
 ///   and its output is not guaranteed to be stable across Typst versions.
-#[func(scope, title = "JSON")]
+#[func(scope, title = "JSON", since = "forever")]
 pub fn json(
     engine: &mut Engine,
     /// A path to a JSON file or raw JSON bytes.
@@ -130,7 +129,7 @@ pub fn json(
 #[scope]
 impl json {
     /// Encodes structured data into a JSON string.
-    #[func(title = "Encode JSON")]
+    #[func(title = "Encode JSON", since = "0.8.0")]
     pub fn encode(
         /// Value to be encoded.
         value: Spanned<Value>,

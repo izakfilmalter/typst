@@ -3,11 +3,11 @@ use std::fs::{File, create_dir_all};
 use std::path::Path;
 
 use clap::{CommandFactory, ValueEnum};
-use clap_complete::{Shell, generate_to};
+use clap_complete::generate_to;
 use clap_mangen::Man;
 
 #[path = "src/args.rs"]
-#[allow(dead_code)]
+#[expect(dead_code)]
 mod args;
 
 fn main() {
@@ -31,7 +31,7 @@ fn main() {
                 .unwrap();
         }
 
-        for shell in Shell::value_variants() {
+        for shell in args::Shell::value_variants() {
             generate_to(*shell, cmd, "typst", out).unwrap();
         }
     }

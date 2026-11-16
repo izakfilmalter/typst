@@ -2,6 +2,8 @@ use std::num::{NonZeroU32, NonZeroUsize};
 use std::sync::Arc;
 
 use ecow::EcoString;
+use typst_macros::Cast;
+use typst_syntax::{LooselySpanned, Spanned};
 use typst_utils::NonZeroExt;
 
 use crate::diag::{HintedStrResult, HintedString, SourceResult, bail};
@@ -9,14 +11,12 @@ use crate::engine::Engine;
 use crate::foundations::{
     Content, Packed, Smart, StyleChain, Synthesize, cast, elem, scope,
 };
-use crate::introspection::{Locatable, Tagged};
-use crate::layout::resolve::{CellGrid, table_to_cellgrid};
+use crate::layout::resolve::{CellGrid, GridStroke, table_to_cellgrid};
 use crate::layout::{
     Abs, Alignment, Celled, GridCell, GridFooter, GridHLine, GridHeader, GridVLine,
     Length, OuterHAlignment, OuterVAlignment, Rel, Sides, TrackSizings,
 };
 use crate::model::Figurable;
-use crate::pdf::TableCellKind;
 use crate::text::LocalName;
 use crate::visualize::{Paint, Stroke};
 
@@ -134,7 +134,7 @@ use crate::visualize::{Paint, Stroke};
 /// visually, you should consider making the core information in your table
 /// available as text as well. You can do this by wrapping your table in a
 /// @figure[figure] and using its caption to summarize the table's content.
-#[elem(scope, Locatable, Tagged, Synthesize, LocalName, Figurable)]
+#[elem(scope, since = "forever", Locatable, Tagged, Synthesize, LocalName, Figurable)]
 pub struct TableElem {
     /// The column sizes. See the @grid:track-size[grid documentation] for more
     /// information on track sizing.
@@ -193,8 +193,8 @@ pub struct TableElem {
     /// )
     /// ```
     #[fold]
-    #[default(Celled::Value(Sides::splat(Some(Abs::pt(5.0).into()))))]
-    pub inset: Celled<Sides<Option<Rel<Length>>>>,
+    #[default(Spanned::detached(Celled::Value(Sides::splat(Some(Abs::pt(5.0).into())))))]
+    pub inset: LooselySpanned<Celled<Sides<Option<Rel<Length>>>>>,
 
     /// How to align the cells' content.
     ///
@@ -216,7 +216,7 @@ pub struct TableElem {
     ///   [A], [B], [C],
     /// )
     /// ```
-    pub align: Celled<Smart<Alignment>>,
+    pub align: LooselySpanned<Celled<Smart<Alignment>>>,
 
     /// How to fill the cells.
     ///
@@ -244,7 +244,7 @@ pub struct TableElem {
     ///   [Profit:], [500 €], [1000 €], [1500 €],
     /// )
     /// ```
-    pub fill: Celled<Option<Paint>>,
+    pub fill: LooselySpanned<Celled<Option<Paint>>>,
 
     /// How to @stroke[stroke] the cells.
     ///
@@ -266,8 +266,10 @@ pub struct TableElem {
     ///
     /// See the @guides:tables:strokes[Table Guide] for more details.
     #[fold]
-    #[default(Celled::Value(Sides::splat(Some(Some(Arc::new(Stroke::default()))))))]
-    pub stroke: Celled<Sides<Option<Option<Arc<Stroke>>>>>,
+    #[default(Spanned::detached(Celled::Value(Sides::splat(Some(Some(
+        Arc::new(Stroke::default())
+    ))))))]
+    pub stroke: LooselySpanned<Celled<Sides<GridStroke>>>,
 
     /// A summary of the purpose and structure of complex tables.
     ///
@@ -456,7 +458,7 @@ impl TryFrom<Content> for TableItem {
 /// header cell. Likewise, you can use @pdf.data-cell to mark cells in this
 /// function as data cells. Note that these functions are not final and thus
 /// only available when you enable the `a11y-extras` feature (see the
-/// @pdf[PDF module documentation] for details).
+/// @pdf[PDF format documentation] for details).
 ///
 /// ```example
 /// #set page(height: 11.5em)
@@ -492,7 +494,7 @@ impl TryFrom<Content> for TableItem {
 ///   [7.34], [57],  [2],
 /// )
 /// ```
-#[elem(name = "header", title = "Table Header")]
+#[elem(name = "header", title = "Table Header", since = "0.11.0")]
 pub struct TableHeader {
     /// Whether this header should be repeated across pages.
     #[default(true)]
@@ -522,7 +524,7 @@ pub struct TableHeader {
 /// other information that should be visible on every page.
 ///
 /// No other table cells may be placed after the footer.
-#[elem(name = "footer", title = "Table Footer")]
+#[elem(name = "footer", title = "Table Footer", since = "0.11.0")]
 pub struct TableFooter {
     /// Whether this footer should be repeated across pages.
     #[default(true)]
@@ -565,7 +567,7 @@ pub struct TableFooter {
 ///   [19:00], [Day 1 Attendee Mixer],
 /// )
 /// ```
-#[elem(name = "hline", title = "Table Horizontal Line")]
+#[elem(name = "hline", title = "Table Horizontal Line", since = "0.11.0")]
 pub struct TableHLine {
     /// The row above which the horizontal line is placed (zero-indexed).
     /// Functions identically to the `y` field in @grid.hline.y[`grid.hline`].
@@ -610,7 +612,7 @@ pub struct TableHLine {
 /// @table.stroke[table's `stroke`] field or
 /// @table.cell.stroke[`table.cell`'s `stroke`] field instead if the line you
 /// want to place is part of all your tables' designs.
-#[elem(name = "vline", title = "Table Vertical Line")]
+#[elem(name = "vline", title = "Table Vertical Line", since = "0.11.0")]
 pub struct TableVLine {
     /// The column before which the vertical line is placed (zero-indexed).
     /// Functions identically to the `x` field in @grid.vline.
@@ -730,7 +732,7 @@ pub struct TableVLine {
 ///   [Vikram], [49], [Perseverance],
 /// )
 /// ```
-#[elem(name = "cell", title = "Table Cell")]
+#[elem(name = "cell", title = "Table Cell", since = "0.11.0")]
 pub struct TableCell {
     /// The cell's body.
     #[required]
@@ -763,7 +765,7 @@ pub struct TableCell {
 
     /// The cell's @table.stroke[stroke] override.
     #[fold]
-    pub stroke: Sides<Option<Option<Arc<Stroke>>>>,
+    pub stroke: Sides<GridStroke>,
 
     /// Whether rows spanned by this cell can be placed in different pages. When
     /// equal to `{auto}`, a cell spanning only fixed-size rows is unbreakable,
@@ -799,7 +801,48 @@ impl Default for Packed<TableCell> {
 
 impl From<Content> for TableCell {
     fn from(value: Content) -> Self {
-        #[allow(clippy::unwrap_or_default)]
         value.unpack::<Self>().unwrap_or_else(Self::new)
+    }
+}
+
+/// Describes what kind of table cell this is.
+///
+/// The full Typst table model only supports header and footer rows, this is
+/// currently only used for PDF export.
+#[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum TableCellKind {
+    Header(NonZeroU32, TableHeaderScope),
+    Footer,
+    #[default]
+    Data,
+}
+
+/// Which table track a header cell labels.
+#[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Hash, Cast)]
+pub enum TableHeaderScope {
+    /// The header cell refers to both the row and the column.
+    Both,
+    /// The header cell refers to the column.
+    #[default]
+    Column,
+    /// The header cell refers to the row.
+    Row,
+}
+
+impl TableHeaderScope {
+    pub fn refers_to_column(&self) -> bool {
+        match self {
+            TableHeaderScope::Both => true,
+            TableHeaderScope::Column => true,
+            TableHeaderScope::Row => false,
+        }
+    }
+
+    pub fn refers_to_row(&self) -> bool {
+        match self {
+            TableHeaderScope::Both => true,
+            TableHeaderScope::Column => false,
+            TableHeaderScope::Row => true,
+        }
     }
 }

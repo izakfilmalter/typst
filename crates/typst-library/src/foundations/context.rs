@@ -1,11 +1,11 @@
 use comemo::Track;
 
-use crate::diag::{Hint, HintedStrResult, SourceResult, bail};
+use crate::diag::{Hint, HintedStrResult, SourceResult, Tracepoint, bail};
 use crate::engine::Engine;
 use crate::foundations::{
     Args, Construct, Content, Func, ShowFn, StyleChain, Value, elem,
 };
-use crate::introspection::{Locatable, Location};
+use crate::introspection::Location;
 
 /// Data that is contextually made available to code.
 ///
@@ -78,5 +78,10 @@ impl Construct for ContextElem {
 pub const CONTEXT_RULE: ShowFn<ContextElem> = |elem, engine, styles| {
     let loc = elem.location().unwrap();
     let context = Context::new(Some(loc), Some(styles));
-    Ok(elem.func.call::<[Value; 0]>(engine, context.track(), [])?.display())
+    let point = || Tracepoint::Context;
+    let args: [Value; 0] = [];
+    Ok(elem
+        .func
+        .call_traced(engine, context.track(), args, point, elem.span())?
+        .display())
 };

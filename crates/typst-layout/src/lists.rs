@@ -1,14 +1,15 @@
 use comemo::Track;
 use smallvec::smallvec;
-use typst_library::diag::SourceResult;
+use typst_library::diag::{SourceResult, Trace, Tracepoint};
 use typst_library::engine::Engine;
 use typst_library::foundations::{Content, Context, Depth, Packed, Resolve, StyleChain};
 use typst_library::introspection::Locator;
 use typst_library::layout::{
     Abs, Axes, Dir, Fragment, Frame, FrameItem, Length, Point, Region, Regions, Size,
 };
-use typst_library::model::{EnumElem, ListElem, Numbering, ParElem, ParbreakElem};
-use typst_library::pdf::PdfMarkerTag;
+use typst_library::model::{
+    EnumElem, ListElem, Numbering, ParElem, ParbreakElem, PdfMarkerTag,
+};
 use typst_library::text::TextElem;
 use typst_syntax::Span;
 
@@ -37,10 +38,11 @@ pub fn layout_list(
     // avoids '#set align' interference with the list.
     let marker_align = elem.marker_align.get(styles);
     let baseline_align = marker_align.y().is_none();
-    let marker = elem
-        .marker
-        .get_ref(styles)
-        .resolve(engine, styles, depth)?
+    let marker = elem.marker.get_ref(styles);
+    let marker = marker
+        .v
+        .resolve(engine, styles, depth, marker.span)
+        .trace(engine.world, Tracepoint::process::<ListElem>, elem.span())?
         .aligned(marker_align);
 
     let mut items = vec![];
@@ -127,7 +129,7 @@ pub fn layout_enum(
                     parents.len(),
                     number,
                 )),
-                other => other
+                Numbering::Func(_) => numbering
                     .apply(engine, context.track(), item.span(), &[number])?
                     .display(),
             }
@@ -397,7 +399,7 @@ fn layout_item(
         layouter.baseline_align(&marker, &mut body, engine)?;
     } else {
         layouter.vertical_align(&mut marker, &body, engine)?;
-    };
+    }
 
     layouter.finish(marker, body)
 }
@@ -549,7 +551,7 @@ impl<'a> ItemLayouter<'a> {
             *body_fragment = self.layout_body(regions, engine)?;
 
             self.body_offset.y = -diff;
-        };
+        }
 
         Ok(())
     }

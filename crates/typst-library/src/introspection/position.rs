@@ -25,7 +25,7 @@ impl DocumentPosition {
     pub fn as_paged(self) -> Option<PagedPosition> {
         match self {
             DocumentPosition::Paged(position) => Some(position),
-            _ => None,
+            DocumentPosition::Html(_) => None,
         }
     }
 
@@ -39,7 +39,25 @@ impl DocumentPosition {
     pub fn as_html(self) -> Option<HtmlPosition> {
         match self {
             DocumentPosition::Html(position) => Some(position),
-            _ => None,
+            DocumentPosition::Paged(_) => None,
+        }
+    }
+
+    /// Returns a dictionary with `x`, `y`, and `page` (unless in an
+    /// `html.frame`) or `None` if the position cannot be expressed as
+    /// coordinates.
+    pub fn into_dict(self) -> Option<Dict> {
+        match self {
+            DocumentPosition::Paged(pos) => Some(pos.into()),
+            // HTML documents have no pages, so there is no `page` key.
+            // Coordinates are only known inside frames, see
+            // `Location::position`.
+            DocumentPosition::Html(pos) => match pos.details() {
+                Some(&InnerHtmlPosition::Frame(point)) => {
+                    Some(dict! { "x" => point.x, "y" => point.y })
+                }
+                Some(InnerHtmlPosition::Character(_)) | None => None,
+            },
         }
     }
 }

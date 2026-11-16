@@ -6,7 +6,7 @@ use std::sync::Arc;
 use comemo::{Track, Tracked, TrackedMut};
 use ecow::{EcoString, EcoVec, eco_format, eco_vec};
 use smallvec::{SmallVec, smallvec};
-use typst_syntax::Span;
+use typst_syntax::{Span, Spanned};
 use typst_utils::{LazyHash, NonZeroExt, Protected};
 
 use crate::diag::{At, HintedStrResult, SourceDiagnostic, SourceResult, bail, warning};
@@ -17,8 +17,7 @@ use crate::foundations::{
     StyleChain, Value, cast, elem, func, scope, select_where, ty,
 };
 use crate::introspection::{
-    History, Introspect, Introspector, Locatable, Location, QueryFirstIntrospection, Tag,
-    Unqueriable,
+    History, Introspect, Introspector, Location, QueryFirstIntrospection, Tag,
 };
 use crate::layout::{Frame, FrameItem, PageElem};
 use crate::math::EquationElem;
@@ -215,7 +214,7 @@ use crate::{Library, World};
 /// The `counter` type is closely related to @state[state] type. Read its
 /// documentation for more details on state management in Typst and why it
 /// doesn't just use normal variables for counters.
-#[ty(scope)]
+#[ty(scope, since = "forever")]
 #[derive(Debug, Clone, PartialEq, Hash)]
 pub struct Counter(CounterKey);
 
@@ -301,24 +300,17 @@ impl Counter {
                 .introspect(QueryFirstIntrospection(Selector::Location(loc), span))
                 .and_then(|content| {
                     if func == HeadingElem::ELEM {
-                        content
-                            .to_packed::<HeadingElem>()
-                            .and_then(|elem| elem.numbering.as_option().clone())
-                            .flatten()
+                        let elem = content.to_packed::<HeadingElem>()?;
+                        elem.numbering.as_option().clone().flatten()
                     } else if func == FigureElem::ELEM {
-                        content
-                            .to_packed::<FigureElem>()
-                            .and_then(|elem| elem.numbering.as_option().clone())
-                            .flatten()
+                        let elem = content.to_packed::<FigureElem>()?;
+                        elem.numbering.as_option().clone().flatten()
                     } else if func == EquationElem::ELEM {
-                        content
-                            .to_packed::<EquationElem>()
-                            .and_then(|elem| elem.numbering.as_option().clone())
-                            .flatten()
+                        let elem = content.to_packed::<EquationElem>()?;
+                        elem.numbering.as_option().clone().flatten()
                     } else if func == FootnoteElem::ELEM {
-                        content
-                            .to_packed::<FootnoteElem>()
-                            .and_then(|elem| elem.numbering.as_option().clone())
+                        let elem = content.to_packed::<FootnoteElem>()?;
+                        elem.numbering.as_option().clone()
                     } else {
                         None
                     }
@@ -344,7 +336,7 @@ impl Counter {
 #[scope]
 impl Counter {
     /// Create a new counter identified by a key.
-    #[func(constructor)]
+    #[func(constructor, since = "forever")]
     pub fn construct(
         /// The key that identifies this counter globally.
         ///
@@ -369,7 +361,7 @@ impl Counter {
     /// returns an array of integers, even if the counter has just one number.
     ///
     /// This is equivalent to `{counter.at(here())}`.
-    #[func(contextual)]
+    #[func(contextual, since = "0.11.0")]
     pub fn get(
         &self,
         engine: &mut Engine,
@@ -387,7 +379,7 @@ impl Counter {
     /// counted element and the current location, respectively).
     ///
     /// Returns the formatted output.
-    #[func(contextual)]
+    #[func(contextual, since = "forever")]
     pub fn display(
         self,
         engine: &mut Engine,
@@ -460,7 +452,7 @@ impl Counter {
     /// The `selector` must match exactly one element in the document. The most
     /// useful kinds of selectors for this are @label[labels] and
     /// @location[locations].
-    #[func(contextual)]
+    #[func(contextual, since = "forever")]
     pub fn at(
         &self,
         engine: &mut Engine,
@@ -475,7 +467,7 @@ impl Counter {
 
     /// Retrieves the value of the counter at the end of the document. Always
     /// returns an array of integers, even if the counter has just one number.
-    #[func(contextual)]
+    #[func(contextual, since = "forever")]
     pub fn final_(
         &self,
         engine: &mut Engine,
@@ -494,7 +486,7 @@ impl Counter {
     /// write `{let _ = counter(page).step()}`. Counter updates are always
     /// applied in layout order and in that case, Typst wouldn't know when to
     /// step the counter.
-    #[func]
+    #[func(since = "forever")]
     pub fn step(
         self,
         span: Span,
@@ -510,7 +502,7 @@ impl Counter {
     ///
     /// Just like with `step`, the update only occurs if you put the resulting
     /// content into the document.
-    #[func]
+    #[func(since = "forever")]
     pub fn update(
         self,
         span: Span,
@@ -592,7 +584,7 @@ cast! {
 /// Elements that have special counting behaviour.
 pub trait Count {
     /// Get the counter update for this element.
-    fn update(&self) -> Option<CounterUpdate>;
+    fn update(&self) -> Option<Spanned<CounterUpdate>>;
 }
 
 /// Counts through elements with different levels.
@@ -610,16 +602,18 @@ impl CounterState {
     pub fn update(
         &mut self,
         engine: &mut Engine,
-        update: CounterUpdate,
+        update: Spanned<CounterUpdate>,
     ) -> SourceResult<()> {
-        match update {
+        match update.v {
             CounterUpdate::Set(state) => *self = state,
             CounterUpdate::Step(level) => self.step(level, 1),
             CounterUpdate::Func(func) => {
-                *self = func
-                    .call(engine, Context::none().track(), self.0.iter().copied())?
-                    .cast()
-                    .at(func.span())?
+                *self = func.call(
+                    engine,
+                    Context::none().track(),
+                    self.0.iter().copied(),
+                    update.span,
+                )?;
             }
         }
         Ok(())
@@ -684,8 +678,8 @@ impl Construct for CounterUpdateElem {
 }
 
 impl Count for Packed<CounterUpdateElem> {
-    fn update(&self) -> Option<CounterUpdate> {
-        Some(self.update.clone())
+    fn update(&self) -> Option<Spanned<CounterUpdate>> {
+        Some(Spanned::new(self.update.clone(), self.span()))
     }
 }
 
@@ -764,7 +758,10 @@ impl ManualPageCounter {
                     };
                     if elem.key == CounterKey::Page {
                         let mut state = CounterState(smallvec![self.logical]);
-                        state.update(engine, elem.update.clone())?;
+                        state.update(
+                            engine,
+                            Spanned::new(elem.update.clone(), elem.span()),
+                        )?;
                         self.logical = state.first();
                     }
                 }
@@ -919,7 +916,7 @@ fn sequence(
 
 /// Memoized implementation of `sequence`.
 #[comemo::memoize]
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn sequence_impl(
     counter: &Counter,
     selector: &Selector,
@@ -958,7 +955,7 @@ fn sequence_impl(
 
         if let Some(update) = match elem.with::<dyn Count>() {
             Some(countable) => countable.update(),
-            None => Some(CounterUpdate::Step(NonZeroUsize::ONE)),
+            None => Some(Spanned::detached(CounterUpdate::Step(NonZeroUsize::ONE))),
         } {
             current.update(&mut engine, update)?;
         }

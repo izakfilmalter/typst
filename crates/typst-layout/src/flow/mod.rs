@@ -21,15 +21,16 @@ use typst_library::introspection::{
     Introspector, Location, Locator, LocatorLink, SplitLocator, Tag,
 };
 use typst_library::layout::{
-    Abs, ColumnGutters, ColumnsElem, Dir, Em, Fr, Fragment, Frame, PageElem,
-    PlacementScope, Region, Regions, Rel, Size, Spacing,
+    Abs, Angle, ColumnGutters, ColumnsElem, Dir, Em, Fr, Fragment, Frame, HAlignment,
+    PageElem, PlacementScope, Region, Regions, Rel, Size, Spacing, VAlignment,
 };
+use typst_library::model::ArtifactKind;
 use typst_library::model::{
     FootnoteContinuation, FootnoteElem, FootnoteEntry, LineNumberingScope, ParLine,
 };
-use typst_library::pdf::ArtifactKind;
 use typst_library::routines::{Arenas, FragmentKind, Pair, RealizationKind};
 use typst_library::text::TextElem;
+use typst_library::visualize::LineElem;
 use typst_library::{Library, World};
 use typst_utils::{LazyHash, NonZeroExt, Numeric, Protected};
 
@@ -38,8 +39,7 @@ use self::collect::{
     BalanceSpec, Child, LineChild, MultiChild, MultiSpill, PlacedChild, SingleChild,
     collect,
 };
-use self::compose::{Composer, compose};
-use self::distribute::distribute;
+use self::compose::compose;
 
 /// Lays out content into a single region, producing a single frame.
 pub fn layout_frame(
@@ -74,8 +74,12 @@ pub fn layout_fragment(
         locator.track(),
         styles,
         regions,
-        NonZeroUsize::ONE,
-        ColumnGutters::uniform(Rel::zero()),
+        ColumnOptions {
+            count: NonZeroUsize::ONE,
+            balanced: false,
+            gutter: ColumnGutters::uniform(Rel::zero()),
+            separator: None,
+        },
     )
 }
 
@@ -102,14 +106,18 @@ pub fn layout_columns(
         locator.track(),
         styles,
         regions,
-        elem.count.get(styles),
-        elem.gutter.resolve(styles),
+        ColumnOptions {
+            count: elem.count.get(styles),
+            balanced: elem.balanced.get(styles),
+            gutter: elem.gutter.resolve(styles),
+            separator: elem.separator.get_cloned(styles),
+        },
     )
 }
 
 /// The cached, internal implementation of [`layout_fragment`].
 #[comemo::memoize]
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn layout_fragment_impl(
     world: Tracked<dyn World + '_>,
     library: &LazyHash<Library>,
@@ -121,8 +129,7 @@ fn layout_fragment_impl(
     locator: Tracked<Locator>,
     styles: StyleChain,
     regions: Regions,
-    columns: NonZeroUsize,
-    column_gutter: ColumnGutters,
+    column: ColumnOptions,
 ) -> SourceResult<Fragment> {
     if !regions.size.x.is_finite() && regions.expand.x {
         bail!(content.span(), "cannot expand into infinite width");
@@ -162,8 +169,7 @@ fn layout_fragment_impl(
         &mut locator,
         styles,
         regions,
-        columns,
-        column_gutter,
+        column,
         kind.into(),
     )
 }
@@ -190,19 +196,17 @@ impl From<FragmentKind> for FlowMode {
 }
 
 /// Lays out realized content into regions, potentially with columns.
-#[allow(clippy::too_many_arguments)]
 pub fn layout_flow<'a>(
     engine: &mut Engine,
     children: &[Pair<'a>],
     locator: &mut SplitLocator<'a>,
     shared: StyleChain<'a>,
     mut regions: Regions,
-    columns: NonZeroUsize,
-    column_gutter: ColumnGutters,
+    column: ColumnOptions,
     mode: FlowMode,
 ) -> SourceResult<Fragment> {
     // Prepare configuration that is shared across the whole flow.
-    let config = configuration(shared, regions, columns, column_gutter, mode);
+    let config = configuration(shared, regions, column, mode);
 
     // Collect the elements into pre-processed children. These are much easier
     // to handle than the raw elements.
@@ -241,26 +245,38 @@ pub fn layout_flow<'a>(
 fn configuration<'x>(
     shared: StyleChain<'x>,
     regions: Regions,
-    columns: NonZeroUsize,
-    column_gutter: ColumnGutters,
+    column: ColumnOptions,
     mode: FlowMode,
 ) -> Config<'x> {
     Config {
         mode,
         shared,
         columns: {
-            let mut count = columns.get();
+            let mut count = column.count.get();
             if !regions.size.x.is_finite() {
                 count = 1;
             }
 
             let base = regions.base().x;
-            let gutters: Vec<Abs> =
-                (0..count.saturating_sub(1)).map(|i| column_gutter.get(i, base)).collect();
+            let gutters: Vec<Abs> = (0..count.saturating_sub(1))
+                .map(|i| column.gutter.get(i, base))
+                .collect();
             let total = gutters.iter().fold(Abs::zero(), |a, &g| a + g);
             let width = (regions.size.x - total) / count as f64;
             let dir = shared.resolve(TextElem::dir);
-            ColumnConfig { count, width, gutters, dir }
+            ColumnConfig {
+                count,
+                width,
+                gutters,
+                dir,
+                balanced: column.balanced,
+                separator: column.separator.map(|separator| {
+                    separator
+                        .set(LineElem::length, Rel::one())
+                        .set(LineElem::angle, Angle::deg(90.0))
+                        .aligned(HAlignment::Center + VAlignment::Horizon)
+                }),
+            }
         },
         footnote: FootnoteConfig {
             separator: shared
@@ -369,6 +385,19 @@ impl<'a, 'b> Work<'a, 'b> {
     }
 }
 
+/// Options defining the column layout.
+#[derive(Hash)]
+pub struct ColumnOptions {
+    /// The number of columns.
+    pub count: NonZeroUsize,
+    /// Whether column heights are to be equalized.
+    pub balanced: bool,
+    /// The spacing between columns.
+    pub gutter: ColumnGutters,
+    /// The separator between columns.
+    pub separator: Option<Content>,
+}
+
 /// Shared configuration for the whole flow.
 struct Config<'x> {
     /// Whether this is the root flow, which can host footnotes and line
@@ -430,6 +459,10 @@ struct ColumnConfig {
     /// The horizontal direction in which columns progress. Defined by
     /// `text.dir`.
     dir: Dir,
+    /// Whether to equalize the height of columns by breaking columns early.
+    balanced: bool,
+    /// The separator between columns.
+    separator: Option<Content>,
 }
 
 /// Configuration of line numbers.

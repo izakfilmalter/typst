@@ -72,15 +72,20 @@ impl LiveVisitor {
                     && let Some(parent) = path.path.get_ident()
                 {
                     for item in &i.items {
-                        if let syn::ImplItem::Fn(item) = item
-                            && has_attr(&item.attrs, "func")
-                        {
-                            self.visit_func(
-                                item.span(),
-                                &item.attrs,
-                                &item.sig,
-                                Some(parent),
-                            );
+                        match item {
+                            syn::ImplItem::Const(c) if has_attr(&c.attrs, "constant") => {
+                                let key = format!("{parent}::{}", c.ident);
+                                self.save_docs(key, c.span(), &c.attrs);
+                            }
+                            syn::ImplItem::Fn(item) if has_attr(&item.attrs, "func") => {
+                                self.visit_func(
+                                    item.span(),
+                                    &item.attrs,
+                                    &item.sig,
+                                    Some(parent),
+                                );
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -155,7 +160,7 @@ fn has_attr(attrs: &[syn::Attribute], ident: &str) -> bool {
 }
 
 /// Parse a bare `type Name;` item.
-#[allow(dead_code)]
+#[expect(dead_code)]
 struct BareType {
     attrs: Vec<syn::Attribute>,
     type_token: syn::Token![type],
