@@ -720,10 +720,16 @@ fn add_par_line_marker(
 fn overhang(glyph: &ShapedGlyph) -> Abs {
     // Note: Binary search is not currently worth it, but can be used if this
     // grows larger.
-    font_overhang_table(&glyph.font)
+    // OpenType features can substitute punctuation (e.g. comma.sc / period.sc)
+    // after the font's cmap was read. Keep the glyph-ID lookup first, then
+    // fall back to the source character for substituted punctuation.
+    let factor = font_overhang_table(&glyph.font)
         .iter()
         .find(|(id, _)| *id == glyph.glyph_id)
-        .map_or(Abs::zero(), |&(_, factor)| factor * glyph.x_advance.at(glyph.size))
+        .map(|&(_, factor)| factor)
+        .or_else(|| DEFAULT_OVERHANG_TABLE.iter().find(|(c, _)| *c == glyph.c).map(|&(_, factor)| factor))
+        .unwrap_or(0.0);
+    factor * glyph.x_advance.at(glyph.size)
 }
 
 /// Generates a sorted table with overhang ratios indexed by glyph ID for a
