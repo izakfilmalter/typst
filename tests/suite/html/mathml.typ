@@ -46,6 +46,13 @@ $
       d & = e + f
 $
 
+--- mathml-multiline-matrix-spacing html ---
+$
+  "square matrix" & = mat(1, 0; 0, 1) \
+          "array" & = mat(1, 0) \
+         "vector" & = vec(1, 0)
+$
+
 --- mathml-stretch-largeop-vs-explicit html ---
 $ integral $
 $ stretch(integral) $
@@ -159,3 +166,12 @@ $ a/sqrt(b) $
     Hello $x$
   ]
 })
+
+--- mathml-show-rule-accent html ---
+#show math.overline: it => {
+  html.elem("mover", attrs: (accent: "true"), {
+    html.elem("mrow", it.body)
+    $class("diacritic", stretch(\u{203E}))$
+  })
+}
+$ overline(A B C) $

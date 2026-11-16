@@ -18,11 +18,11 @@ use crate::foundations::{Repr, cast, func, repr, scope, ty};
 /// special case, the empty version (that has no components at all) is the same
 /// as `0`, `0.0`, `0.0.0`, and so on.
 ///
-/// The current version of the Typst compiler is available as `sys.version`.
+/// The current version of the Typst compiler is available as @sys.version.
 ///
 /// You can convert a version to an array of explicitly given components using
 /// the @array constructor.
-#[ty(scope, cast)]
+#[ty(scope, cast, since = "0.9.0")]
 #[derive(Debug, Default, Clone, Hash)]
 pub struct Version(EcoVec<u32>);
 
@@ -75,8 +75,8 @@ impl Version {
     ///   ```
     /// )
     ///
-    /// As a practical use case, this allows comparing the current version
-    /// (@version[`{sys.version}`]) to a specific one.
+    /// As a practical use case, this allows comparing the current compiler
+    /// version (available as @sys.version) to a specific one.
     ///
     /// #example(
     ///   title: "Comparing with the current version",
@@ -86,7 +86,7 @@ impl Version {
     ///   #(version(3, 2, 0) > version(4, 1, 0))
     ///   ```
     /// )
-    #[func(constructor)]
+    #[func(constructor, since = "0.9.0")]
     pub fn construct(
         /// The components of the version (array arguments are flattened)
         #[variadic]
@@ -110,7 +110,7 @@ impl Version {
     ///
     /// The returned integer is always non-negative. Returns `0` if the version
     /// isn't specified to the necessary length.
-    #[func]
+    #[func(since = "0.9.0")]
     pub fn at(
         &self,
         /// The index at which to retrieve the component. If negative, indexes
@@ -213,4 +213,32 @@ cast! {
     VersionComponents,
     v: u32 => Self::Single(v),
     v: Vec<u32> => Self::Multiple(v)
+}
+
+/// When a feature was introduced.
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum Since {
+    /// The feature was introduced before Typst 0.1.0.
+    Forever,
+    /// The feature was introduced in a version released after Typst 0.1.0.
+    Version([u32; 3]),
+    /// The feature is not present in any official Typst release.
+    Unreleased,
+}
+
+cast! {
+    Since,
+    self => match self {
+        Self::Forever => "forever".into_value(),
+        Self::Version(v) => Version::from_iter(v.into_iter()).into_value(),
+        Self::Unreleased => "unreleased".into_value(),
+    },
+    "forever" => Self::Forever,
+    "unreleased" => Self::Unreleased,
+    v: Version => {
+        let &[major, minor, patch] = v.values() else {
+            bail!("expected a version with exactly three components")
+        };
+        Self::Version([major, minor, patch])
+    },
 }

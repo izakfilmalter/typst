@@ -10,11 +10,10 @@ use crate::layout::{Abs, Length, Ratio, Rel};
 
 /// Separates a region into multiple equally sized columns.
 ///
-/// The `column` function lets you separate the interior of any container into
-/// multiple columns. It will not balance the height of the columns by itself.
-/// Instead, the columns will take up the height of their container or the
-/// remaining height on the page. Use @colbalance to balance the columns up to
-/// a point.
+/// The `columns` function separates the interior of a container into multiple
+/// columns. By default, columns take the height of the container or remaining
+/// page and fill one after another. Use @columns.balanced to equalize their
+/// height, or @colbalance to balance the columns up to a point.
 ///
 /// When arranging content across multiple columns, use @colbreak to explicitly
 /// continue in the next column.
@@ -62,7 +61,7 @@ use crate::layout::{Abs, Length, Ratio, Rel};
 ///   #lorem(40)
 ///   ```
 /// )
-#[elem]
+#[elem(since = "forever")]
 pub struct ColumnsElem {
     /// The number of columns.
     #[positional]
@@ -83,6 +82,64 @@ pub struct ColumnsElem {
     /// ```
     #[default(ColumnGutter(smallvec![Ratio::new(0.04).into()]))]
     pub gutter: ColumnGutter,
+
+    /// Whether to equalize the height of columns by breaking columns early.
+    ///
+    /// ```example
+    /// #set page(columns: 2, height: 5cm)
+    /// #set par(justify: true)
+    /// >>> #set columns(gutter: 15pt)
+    /// #set columns(balanced: true)
+    /// #lorem(30)
+    /// ```
+    #[default(false)]
+    pub balanced: bool,
+
+    /// The separator to place between each pair of non-empty columns.
+    ///
+    /// By default, the content is centered and @line[lines] use a length of
+    /// `{100%}` and an angle of `{90deg}` unless specified otherwise.
+    ///
+    /// ```example
+    /// #set page(columns: 2, height: 5cm)
+    /// #set par(justify: true)
+    /// #set columns(
+    ///   gutter: 2em,
+    ///   separator: line(),
+    /// )
+    /// #lorem(35)
+    /// ```
+    ///
+    /// #example(
+    ///   title: "Separator with extended, dotted line",
+    ///   ```
+    ///   #set page(columns: 2, height: 5cm)
+    ///   #set par(justify: true)
+    ///   #set columns(
+    ///     gutter: 2em,
+    ///     separator: line(
+    ///       stroke: (dash: "dotted"),
+    ///       length: 100% + 2 * 4pt,
+    ///     ),
+    ///   )
+    ///   #lorem(35)
+    ///   ```
+    /// )
+    ///
+    /// #example(
+    ///   title: "Custom separator ornament",
+    ///   ```
+    ///   #set page(columns: 3, width: 15cm, height: 3cm)
+    ///   #set par(justify: true)
+    ///   #set columns(
+    ///     gutter: 30pt,
+    ///     separator: curve(curve.cubic((-8pt, 0%), (8pt, 50%), (0pt, 50%))
+    ///   ))
+    ///   #lorem(36)
+    ///   ```
+    /// )
+    #[default]
+    pub separator: Option<Content>,
 
     /// The content that should be layouted into the columns.
     #[required]
@@ -161,12 +218,22 @@ impl ColumnGutters {
 /// understanding of the fundamental
 /// laws of nature.
 /// ```
-#[elem(title = "Column Break")]
+#[elem(title = "Column Break", since = "forever")]
 pub struct ColbreakElem {
     /// If `{true}`, the column break is skipped if the current column is
     /// already empty.
     #[default(false)]
     pub weak: bool,
+}
+
+/// Where footnotes are placed in balanced columns.
+#[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Hash, Cast)]
+pub enum BalanceNotes {
+    /// Under the balanced text (the default).
+    #[default]
+    Raise,
+    /// At the foot of the full region.
+    Foot,
 }
 
 /// Balances the columns of the current page or container up to this point.
@@ -199,16 +266,7 @@ pub struct ColbreakElem {
 /// #colbalance()
 /// ```
 /// Where a balanced page's footnotes stand, see [`ColbalanceElem::notes`].
-#[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Hash, Cast)]
-pub enum BalanceNotes {
-    /// Under the balanced text (the default).
-    #[default]
-    Raise,
-    /// At the foot of the full region.
-    Foot,
-}
-
-#[elem(title = "Column Balance")]
+#[elem(title = "Column Balance", since = "unreleased")]
 pub struct ColbalanceElem {
     /// If set, the balanced column height is a whole multiple of this length,
     /// measured from the top of the columns. With a fixed line pitch, setting

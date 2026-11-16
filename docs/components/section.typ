@@ -1,6 +1,6 @@
 #import "base.typ": (
-  classnames, heading-offset, icon, labelled, short-or-long, title-state,
-  tooltip-counter,
+  classnames, dev-version-warning, heading-offset, icon, labelled,
+  short-or-long, title-state, tooltip-counter,
 )
 #import "linking.typ": register-def
 #import "nav.typ": nav-breadcrumbs, nav-folding, nav-on-this-page, nav-prev-next
@@ -70,6 +70,7 @@
   class: none,
   nav-buttons: none,
   kind: none,
+  path: none,
   keywords: none,
   description: none,
   body,
@@ -97,6 +98,7 @@
     register-index-item(
       kind: kind,
       title: title,
+      path: path,
       dest: route,
       keywords: keywords,
     )
@@ -123,6 +125,9 @@
     })
 
     html.body(class: classnames("docs", class), {
+      if stdx.is-dev-version {
+        dev-version-warning()
+      }
       html.header(class: "w695", {
         html.button(
           class: "hamburger",
@@ -179,6 +184,8 @@
 
   // The kind of section. This is displayed in the search result for the page.
   kind: none,
+  // The canonical path for this item in Typst's standard library.
+  path: none,
   // Keywords for the page. The page can be found in search with these.
   keywords: (),
   // The plain-text description of the HTML page.
@@ -227,6 +234,7 @@
       class: class,
       nav-buttons: nav-buttons,
       kind: kind,
+      path: path,
       keywords: keywords,
       description: description,
       body,

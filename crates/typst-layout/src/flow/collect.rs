@@ -12,9 +12,10 @@ use typst_library::introspection::{
     Introspector, Location, Locator, LocatorLink, SplitLocator, Tag, TagElem,
 };
 use typst_library::layout::{
-    Abs, AlignElem, Alignment, Axes, BalanceNotes, BlockElem, ColbalanceElem, ColbreakElem,
-    FixedAlignment, FlushElem, Fr, Fragment, Frame, FrameParent, Inherit, PagebreakElem,
-    PlaceElem, PlacementScope, Ratio, Region, Regions, Rel, Size, Sizing, Spacing, VElem,
+    Abs, AlignElem, Alignment, Axes, BalanceNotes, BlockElem, ColbalanceElem,
+    ColbreakElem, FixedAlignment, FlushElem, Fr, Fragment, Frame, FrameParent, Inherit,
+    PagebreakElem, PlaceElem, PlacementScope, Ratio, Region, Regions, Rel, Size, Sizing,
+    Spacing, VElem,
 };
 use typst_library::model::ParElem;
 use typst_library::routines::Pair;
@@ -36,7 +37,6 @@ fn parallel_pars() -> bool {
 /// Collects all elements of the flow into prepared children. These are much
 /// simpler to handle than the raw elements.
 #[typst_macros::time]
-#[allow(clippy::too_many_arguments)]
 pub fn collect<'a>(
     engine: &mut Engine,
     bump: &'a Bump,
@@ -49,7 +49,6 @@ pub fn collect<'a>(
     Collector {
         engine,
         bump,
-        children,
         locator: locator.split(),
         base,
         expand,
@@ -57,14 +56,13 @@ pub fn collect<'a>(
         par_situation: ParSituation::First,
         pending: Vec::new(),
     }
-    .run(mode)
+    .run(children, mode)
 }
 
 /// State for collection.
 struct Collector<'a, 'x, 'y> {
     engine: &'x mut Engine<'y>,
     bump: &'a Bump,
-    children: &'x [Pair<'a>],
     base: Size,
     expand: bool,
     locator: SplitLocator<'a>,
@@ -85,16 +83,36 @@ struct PendingPar<'a> {
 
 impl<'a> Collector<'a, '_, '_> {
     /// Perform the collection.
-    fn run(self, mode: FlowMode) -> SourceResult<Vec<Child<'a>>> {
-        match mode {
-            FlowMode::Root | FlowMode::Block => self.run_block(),
-            FlowMode::Inline => self.run_inline(),
+    fn run(
+        mut self,
+        children: &[Pair<'a>],
+        mode: FlowMode,
+    ) -> SourceResult<Vec<Child<'a>>> {
+        // Extract leading and trailing tags.
+        let (start, end) = children.split_prefix_suffix(|(c, _)| c.is::<TagElem>());
+        let inner = &children[start..end];
+
+        for (c, _) in &children[..start] {
+            let elem = c.to_packed::<TagElem>().unwrap();
+            self.output.push(Child::Tag(&elem.tag));
         }
+
+        match mode {
+            FlowMode::Root | FlowMode::Block => self.run_block(inner)?,
+            FlowMode::Inline => self.run_inline(inner)?,
+        }
+
+        for (c, _) in &children[end..] {
+            let elem = c.to_packed::<TagElem>().unwrap();
+            self.output.push(Child::Tag(&elem.tag));
+        }
+
+        Ok(self.output)
     }
 
     /// Perform collection for block-level children.
-    fn run_block(mut self) -> SourceResult<Vec<Child<'a>>> {
-        for &(child, styles) in self.children {
+    fn run_block(&mut self, children: &[Pair<'a>]) -> SourceResult<()> {
+        for &(child, styles) in children {
             if let Some(elem) = child.to_packed::<TagElem>() {
                 self.output.push(Child::Tag(&elem.tag));
             } else if let Some(elem) = child.to_packed::<VElem>() {
@@ -102,7 +120,8 @@ impl<'a> Collector<'a, '_, '_> {
             } else if let Some(elem) = child.to_packed::<ParElem>() {
                 self.par(elem, styles)?;
             } else if let Some(elem) = child.to_packed::<BlockElem>() {
-                self.block(elem, styles);
+                let alone = children.len() == 1;
+                self.block(elem, styles, alone);
             } else if let Some(elem) = child.to_packed::<PlaceElem>() {
                 self.place(elem, styles)?;
             } else if child.is::<FlushElem>() {
@@ -115,7 +134,12 @@ impl<'a> Collector<'a, '_, '_> {
                 let offset = elem.offset.get(styles).resolve(styles);
                 let level_notes = elem.level_notes.get(styles);
                 let notes_foot = elem.notes.get(styles) == BalanceNotes::Foot;
-                self.output.push(Child::Balance(BalanceSpec { snap, offset, level_notes, notes_foot }));
+                self.output.push(Child::Balance(BalanceSpec {
+                    snap,
+                    offset,
+                    level_notes,
+                    notes_foot,
+                }));
             } else if child.is::<PagebreakElem>() {
                 bail!(
                     child.span(), "pagebreaks are not allowed inside of containers";
@@ -131,7 +155,7 @@ impl<'a> Collector<'a, '_, '_> {
         }
 
         self.finish_pars()?;
-        Ok(self.output)
+        Ok(())
     }
 
     /// (fork) Lay out the paragraphs the sweep set aside, several at once (each paragraph's
@@ -144,36 +168,37 @@ impl<'a> Collector<'a, '_, '_> {
         }
         let pending = std::mem::take(&mut self.pending);
         let (base, expand) = (self.base, self.expand);
-        let layouts: Vec<SourceResult<Fragment>> = if pending.len() == 1 || !parallel_pars() {
-            pending
-                .iter()
-                .map(|(_, p)| {
-                    crate::inline::layout_par(
-                        p.elem,
-                        self.engine,
-                        p.locator.relayout(),
-                        p.styles,
-                        base,
-                        expand,
-                        p.situation,
-                    )
-                })
-                .collect()
-        } else {
-            self.engine
-                .parallelize(pending.iter().map(|(_, p)| p), |engine, p| {
-                    crate::inline::layout_par(
-                        p.elem,
-                        engine,
-                        p.locator.relayout(),
-                        p.styles,
-                        base,
-                        expand,
-                        p.situation,
-                    )
-                })
-                .collect()
-        };
+        let layouts: Vec<SourceResult<Fragment>> =
+            if pending.len() == 1 || !parallel_pars() {
+                pending
+                    .iter()
+                    .map(|(_, p)| {
+                        crate::inline::layout_par(
+                            p.elem,
+                            self.engine,
+                            p.locator.relayout(),
+                            p.styles,
+                            base,
+                            expand,
+                            p.situation,
+                        )
+                    })
+                    .collect()
+            } else {
+                self.engine
+                    .parallelize(pending.iter().map(|(_, p)| p), |engine, p| {
+                        crate::inline::layout_par(
+                            p.elem,
+                            engine,
+                            p.locator.relayout(),
+                            p.styles,
+                            base,
+                            expand,
+                            p.situation,
+                        )
+                    })
+                    .collect()
+            };
         // (from the back, so that the indices before stay valid)
         let mut parts = Vec::with_capacity(pending.len());
         for ((at, p), layout) in pending.into_iter().zip(layouts) {
@@ -193,18 +218,14 @@ impl<'a> Collector<'a, '_, '_> {
     }
 
     /// Perform collection for inline-level children.
-    fn run_inline(mut self) -> SourceResult<Vec<Child<'a>>> {
-        // Extract leading and trailing tags.
-        let (start, end) = self.children.split_prefix_suffix(|(c, _)| c.is::<TagElem>());
-        let inner = &self.children[start..end];
-
+    fn run_inline(&mut self, children: &[Pair<'a>]) -> SourceResult<()> {
         // Compute the shared styles.
-        let styles = StyleChain::trunk_from_pairs(inner).unwrap_or_default();
+        let styles = StyleChain::trunk_from_pairs(children).unwrap_or_default();
 
         // Layout the lines.
         let lines = crate::inline::layout_inline(
             self.engine,
-            inner,
+            children,
             &mut self.locator,
             styles,
             self.base,
@@ -212,20 +233,10 @@ impl<'a> Collector<'a, '_, '_> {
         )?
         .into_frames();
 
-        for (c, _) in &self.children[..start] {
-            let elem = c.to_packed::<TagElem>().unwrap();
-            self.output.push(Child::Tag(&elem.tag));
-        }
-
         let leading = styles.resolve(ParElem::leading);
         self.lines(lines, leading, styles);
 
-        for (c, _) in &self.children[end..] {
-            let elem = c.to_packed::<TagElem>().unwrap();
-            self.output.push(Child::Tag(&elem.tag));
-        }
-
-        Ok(self.output)
+        Ok(())
     }
 
     /// Collect vertical spacing into a relative or fractional child.
@@ -249,7 +260,10 @@ impl<'a> Collector<'a, '_, '_> {
             // (fork) set aside: laid out after the sweep, with the others (`finish_pars`)
             let locator = self.locator.next_elem(&elem.span(), elem);
             let situation = self.par_situation;
-            self.pending.push((self.output.len(), PendingPar { elem, styles, locator, situation }));
+            self.pending.push((
+                self.output.len(),
+                PendingPar { elem, styles, locator, situation },
+            ));
             self.par_situation = ParSituation::Consecutive;
             return Ok(());
         }
@@ -330,17 +344,20 @@ impl<'a> Collector<'a, '_, '_> {
                 frame.height()
             };
 
-            output
-                .push(Child::Line(self.boxed(LineChild { frame, align, need })));
+            output.push(Child::Line(self.boxed(LineChild { frame, align, need })));
         }
     }
 
     /// Collect a block into a [`SingleChild`] or [`MultiChild`] depending on
     /// whether it is breakable.
-    fn block(&mut self, elem: &'a Packed<BlockElem>, styles: StyleChain<'a>) {
+    fn block(
+        &mut self,
+        elem: &'a Packed<BlockElem>,
+        styles: StyleChain<'a>,
+        alone: bool,
+    ) {
         let locator = self.locator.next_elem(&elem.span(), elem);
         let align = styles.resolve(AlignElem::alignment);
-        let alone = self.children.len() == 1;
         let sticky = elem.sticky.get(styles);
         let breakable = elem.breakable.get(styles);
         let fr = match elem.height.get(styles) {
@@ -378,7 +395,7 @@ impl<'a> Collector<'a, '_, '_> {
                 locator,
                 cell: CachedCell::new(),
             })));
-        };
+        }
 
         self.output.push(spacing(elem.below.get(styles)));
         self.par_situation = ParSituation::Other;
@@ -531,7 +548,7 @@ impl SingleChild<'_> {
 
 /// The cached, internal implementation of [`SingleChild::layout`].
 #[comemo::memoize]
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn layout_single_impl(
     world: Tracked<dyn World + '_>,
     library: &LazyHash<Library>,
@@ -636,7 +653,7 @@ impl<'a> MultiChild<'a> {
 
 /// The cached, internal implementation of [`MultiChild::layout_full`].
 #[comemo::memoize]
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn layout_multi_impl(
     world: Tracked<dyn World + '_>,
     library: &LazyHash<Library>,

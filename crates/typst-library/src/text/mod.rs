@@ -87,7 +87,7 @@ pub(super) fn define(global: &mut Scope) {
 ///   With a function call.
 /// ])
 /// ```
-#[elem(Debug, Construct, PlainText, Repr)]
+#[elem(since = "forever", Debug, Construct, PlainText, Repr)]
 pub struct TextElem {
     /// A font family descriptor or priority list of font family descriptors.
     ///
@@ -719,10 +719,10 @@ pub struct TextElem {
     /// ```example
     /// #set text(font: "Noto Sans", 20pt)
     /// #set text(number-type: "lining")
-    /// Number 9.
+    /// Lining: 0123456789.
     ///
     /// #set text(number-type: "old-style")
-    /// Number 9.
+    /// Old style: 0123456789.
     /// ```
     #[ghost]
     pub number_type: Smart<NumberType>,
@@ -862,11 +862,34 @@ pub struct TextElem {
     pub variations: FontVariations,
 
     /// Content in which all text is styled according to the other arguments.
+    ///
+    /// This parameter is only available on the `text` constructor (and not on
+    /// existing `text` elements) because the `text` constructor does not
+    /// necessarily construct a single `text` element. Instead, it applies
+    /// styles to all the text elements within the passed body.
+    ///
+    /// ```example
+    /// #text(red)[
+    ///   The `body` can be _arbitrary_
+    ///   #underline[content].
+    /// ]
+    /// ```
     #[external]
     #[required]
     pub body: Content,
 
-    /// The text.
+    /// The text contained in a `text` element.
+    ///
+    /// This parameter is not available on the constructor. Instead, you can
+    /// access it on an existing `text` element. This is because the `text`
+    /// constructor accepts arbitrary content as its body (see @text.body).
+    ///
+    /// ```example
+    /// #show regex("i.+n"): it => {
+    ///   "i" + str(it.text.len() - 2) + "n"
+    /// }
+    /// internationalization
+    /// ```
     #[required]
     pub text: EcoString,
 
@@ -1212,7 +1235,7 @@ impl TryInto<VerticalFontMetric> for TopEdgeMetric {
             Self::CapHeight => Ok(VerticalFontMetric::CapHeight),
             Self::XHeight => Ok(VerticalFontMetric::XHeight),
             Self::Baseline => Ok(VerticalFontMetric::Baseline),
-            _ => Err(()),
+            Self::Bounds => Err(()),
         }
     }
 }
@@ -1254,7 +1277,7 @@ impl TryInto<VerticalFontMetric> for BottomEdgeMetric {
         match self {
             Self::Baseline => Ok(VerticalFontMetric::Baseline),
             Self::Descender => Ok(VerticalFontMetric::Descender),
-            _ => Err(()),
+            Self::Bounds => Err(()),
         }
     }
 }
@@ -1474,7 +1497,7 @@ pub fn features(styles: StyleChain) -> Vec<Feature> {
     }
 
     for (tag, value) in styles.get_cloned(TextElem::features).0 {
-        tags.push(Feature::new(tag.into(), value, ..))
+        tags.push(Feature::new(tag.into(), value, ..));
     }
 
     tags

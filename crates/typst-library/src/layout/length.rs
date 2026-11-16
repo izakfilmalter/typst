@@ -39,7 +39,7 @@ use crate::layout::{Abs, Em};
 /// - `abs`: A length with just the absolute component of the current length
 ///   (that is, excluding the `em` component).
 /// - `em`: The amount of `em` units in this length, as a @float[float].
-#[ty(scope, cast)]
+#[ty(scope, cast, since = "forever")]
 #[derive(Default, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct Length {
     /// The absolute part.
@@ -98,10 +98,17 @@ impl Length {
     /// Converts this length to points.
     ///
     /// Fails with an error if this length has non-zero `em` units (such as
-    /// `5em + 2pt` instead of just `2pt`). Use the `abs` field (such as in
-    /// `(5em + 2pt).abs.pt()`) to ignore the `em` component of the length (thus
-    /// converting only its absolute component).
-    #[func(name = "pt", title = "Points")]
+    /// `{5em + 2pt}` instead of just `{2pt}`).
+    ///
+    /// To get a length with a null `em` component from a length with a non-null
+    /// `em` component, you can:
+    /// - Use the `abs` field (such as in `{(5em + 2pt).abs.pt()}`) to ignore
+    ///   the `em` component of the length (thus converting only its absolute
+    ///   component)
+    /// - Use the contextual @length.to-absolute[`to-absolute`] method (e.g.,
+    ///   `{(5em + 2pt).to-absolute().pt()}`) to first convert the `em`
+    ///   component to an absolute value
+    #[func(name = "pt", title = "Points", since = "0.7.0")]
     pub fn to_pt(&self, span: Span) -> SourceResult<f64> {
         self.ensure_that_em_is_zero(span, "pt")?;
         Ok(self.abs.to_pt())
@@ -111,7 +118,7 @@ impl Length {
     ///
     /// Fails with an error if this length has non-zero `em` units. See the
     /// @length.pt[`pt`] method for more details.
-    #[func(name = "mm", title = "Millimeters")]
+    #[func(name = "mm", title = "Millimeters", since = "0.7.0")]
     pub fn to_mm(&self, span: Span) -> SourceResult<f64> {
         self.ensure_that_em_is_zero(span, "mm")?;
         Ok(self.abs.to_mm())
@@ -121,7 +128,7 @@ impl Length {
     ///
     /// Fails with an error if this length has non-zero `em` units. See the
     /// @length.pt[`pt`] method for more details.
-    #[func(name = "cm", title = "Centimeters")]
+    #[func(name = "cm", title = "Centimeters", since = "0.7.0")]
     pub fn to_cm(&self, span: Span) -> SourceResult<f64> {
         self.ensure_that_em_is_zero(span, "cm")?;
         Ok(self.abs.to_cm())
@@ -131,7 +138,7 @@ impl Length {
     ///
     /// Fails with an error if this length has non-zero `em` units. See the
     /// @length.pt[`pt`] method for more details.
-    #[func(name = "inches")]
+    #[func(name = "inches", since = "0.7.0")]
     pub fn to_inches(&self, span: Span) -> SourceResult<f64> {
         self.ensure_that_em_is_zero(span, "inches")?;
         Ok(self.abs.to_inches())
@@ -154,7 +161,7 @@ impl Length {
     ///   #(10em).to-absolute()
     /// ]
     /// ```
-    #[func]
+    #[func(since = "0.11.0")]
     pub fn to_absolute(&self, context: Tracked<Context>) -> HintedStrResult<Length> {
         Ok(self.resolve(context.styles()?).into())
     }

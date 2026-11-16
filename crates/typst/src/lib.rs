@@ -49,6 +49,7 @@ use typst_library::diag::{
     FileError, SourceDiagnostic, SourceResult, Warned, bail, warning,
 };
 use typst_library::engine::{Engine, Route, Sink, Traced};
+use typst_library::format::Format;
 use typst_library::foundations::{
     NativeRuleMap, Output, StyleChain, Styles, Target, TargetElem, Value,
 };
@@ -135,7 +136,7 @@ fn compile_impl<T: Output>(
     // Lean history: keep only the previous document (the next iteration needs its
     // introspector). Older documents are kept solely for detailed non-convergence
     // diagnostics and cost a full layout each; set TYPST_FULL_HISTORY to keep them.
-    let lean = std::env::var_os("TYPST_FULL_HISTORY").is_none();
+    let mut lean = std::env::var_os("TYPST_FULL_HISTORY").is_none();
     let mut iterations = 0usize;
 
     // Relayout until all introspections stabilize.
@@ -145,7 +146,12 @@ fn compile_impl<T: Output>(
         // Keep only memoised results that the previous iteration used: without this,
         // every relayout of an introspection-heavy document stacks a full cache.
         if !history.is_empty() {
-            comemo::evict(std::env::var("TYPST_EVICT_AGE").ok().and_then(|v| v.parse().ok()).unwrap_or(0));
+            comemo::evict(
+                std::env::var("TYPST_EVICT_AGE")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0),
+            );
         }
         let introspector = history
             .last()
@@ -166,9 +172,15 @@ fn compile_impl<T: Output>(
         document = T::create(&mut engine, &content, styles)?;
         if std::env::var_os("TYPST_ITER_LOG").is_some() {
             let rss = std::fs::read_to_string("/proc/self/status").ok().and_then(|s| {
-                s.lines().find(|l| l.starts_with("VmRSS")).map(|l| l.split_whitespace().nth(1).unwrap_or("").to_string())
+                s.lines()
+                    .find(|l| l.starts_with("VmRSS"))
+                    .map(|l| l.split_whitespace().nth(1).unwrap_or("").to_string())
             });
-            eprintln!("typst: iteration {} done, rss {} kB", iterations + 1, rss.unwrap_or_default());
+            eprintln!(
+                "typst: iteration {} done, rss {} kB",
+                iterations + 1,
+                rss.unwrap_or_default()
+            );
         }
 
         if timed!("check stabilized", constraint.validate(document.introspector())) {
@@ -178,6 +190,16 @@ fn compile_impl<T: Output>(
 
         iterations += 1;
         if lean && iterations >= MAX_ITERS {
+            // Bundle validation can observe changes that do not affect the
+            // actual introspection results. Retry with history so `analyze`
+            // can distinguish those false positives from genuine cycles.
+            // Keep the memory-saving path unchanged for paged book builds.
+            if T::target() == Target::Bundle {
+                history.clear();
+                iterations = 0;
+                lean = false;
+                continue;
+            }
             sink.extend_from_sink(subsink);
             sink.warn(warning!(
                 Span::detached(),
@@ -263,7 +285,7 @@ fn hint_invalid_main_file(
                 diagnostic
                     .hint("a file without an extension is not usually a Typst file");
             }
-        };
+        }
 
         if world.source(input.map(|p| p.with_extension("typ")).intern()).is_ok() {
             diagnostic.hint("check if you meant to use the `.typ` extension instead");
@@ -318,19 +340,36 @@ fn warn_or_error_for_bundle(features: &Features, sink: &mut Sink) -> SourceResul
 /// Provides ways to construct a [`Library`].
 pub trait LibraryExt {
     /// Creates the default library.
-    fn default() -> Library;
+    ///
+    /// Requires passing in all formats that should be registered, see
+    /// [`Self::builder()`]
+    #[expect(clippy::new_ret_no_self)]
+    fn new(formats: impl IntoIterator<Item = Format>) -> Library;
 
     /// Creates a builder for configuring a library.
-    fn builder() -> LibraryBuilder;
+    ///
+    /// Requires passing in all formats that should be registered.
+    /// ```
+    /// use typst::{Library, LibraryExt};
+    ///
+    /// Library::builder([
+    ///     typst_html::FORMAT,
+    ///     typst_pdf::FORMAT,
+    ///     typst_svg::FORMAT,
+    ///     typst_render::FORMAT,
+    ///     typst_bundle::FORMAT,
+    /// ]);
+    /// ```
+    fn builder(formats: impl IntoIterator<Item = Format>) -> LibraryBuilder;
 }
 
 impl LibraryExt for Library {
-    fn default() -> Library {
-        Self::builder().build()
+    fn new(formats: impl IntoIterator<Item = Format>) -> Library {
+        Self::builder(formats).build()
     }
 
-    fn builder() -> LibraryBuilder {
-        LibraryBuilder::from_routines(&ROUTINES)
+    fn builder(formats: impl IntoIterator<Item = Format>) -> LibraryBuilder {
+        LibraryBuilder::from_routines(&ROUTINES, formats)
     }
 }
 
@@ -349,7 +388,21 @@ static ROUTINES: LazyLock<Routines> = LazyLock::new(|| Routines {
     eval_closure: typst_eval::eval_closure,
     realize: typst_realize::realize,
     layout_frame: typst_layout::layout_frame,
-    html_module: typst_html::module,
     html_mathml_body: typst_html::html_mathml_body,
     html_span_filled: typst_html::html_span_filled,
 });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats() {
+        // No formats at all.
+        Library::new([]);
+        // Only the HTML format.
+        Library::new([typst_html::FORMAT]);
+        // Only a paged format.
+        Library::new([typst_svg::FORMAT]);
+    }
+}

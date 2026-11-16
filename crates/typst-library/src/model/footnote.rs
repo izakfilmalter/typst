@@ -3,6 +3,7 @@ use std::str::FromStr;
 
 use comemo::Track;
 use ecow::{EcoString, eco_format};
+use typst_syntax::Spanned;
 use typst_utils::{NonZeroExt, singleton};
 
 use crate::diag::{At, SourceResult, StrResult, bail};
@@ -12,7 +13,7 @@ use crate::foundations::{
     Styles, cast, elem, scope,
 };
 use crate::introspection::{
-    Count, Counter, CounterUpdate, Locatable, Location, QueryLabelIntrospection, Tagged,
+    Count, Counter, CounterUpdate, Location, QueryLabelIntrospection,
 };
 use crate::layout::{Em, Length, Ratio, Spacing};
 use crate::model::{DirectLinkElem, Numbering, NumberingPattern, ParElem};
@@ -60,7 +61,7 @@ use crate::visualize::{LineElem, Stroke};
 /// Footnotes will be read by Assistive Technology (AT) immediately after the
 /// spot in the text where they are referenced, just like how they appear in
 /// markup.
-#[elem(scope, Locatable, Tagged, Count)]
+#[elem(scope, since = "0.4.0", Locatable, Tagged, Count)]
 pub struct FootnoteElem {
     /// How to number footnotes. Accepts a
     /// @numbering[numbering pattern or function] taking a single number.
@@ -160,7 +161,7 @@ impl FootnoteElem {
     pub fn body_content(&self) -> Option<&Content> {
         match &self.body {
             FootnoteBody::Content(content) => Some(content),
-            _ => None,
+            FootnoteBody::Reference(_) => None,
         }
     }
 }
@@ -197,14 +198,15 @@ impl Packed<FootnoteElem> {
                 }
                 footnote.declaration_location(engine)
             }
-            _ => Ok(self.location().unwrap()),
+            FootnoteBody::Content(_) => Ok(self.location().unwrap()),
         }
     }
 }
 
 impl Count for Packed<FootnoteElem> {
-    fn update(&self) -> Option<CounterUpdate> {
-        (!self.is_ref()).then(|| CounterUpdate::Step(NonZeroUsize::ONE))
+    fn update(&self) -> Option<Spanned<CounterUpdate>> {
+        (!self.is_ref())
+            .then(|| Spanned::new(CounterUpdate::Step(NonZeroUsize::ONE), self.span()))
     }
 }
 
@@ -243,7 +245,14 @@ cast! {
 /// page run is a sequence of pages without an explicit pagebreak in between).
 /// For this reason, set and show rules for footnote entries should be defined
 /// before any page content, typically at the very start of the document.
-#[elem(name = "entry", title = "Footnote Entry", Locatable, Tagged, ShowSet)]
+#[elem(
+    name = "entry",
+    title = "Footnote Entry",
+    since = "0.4.0",
+    Locatable,
+    Tagged,
+    ShowSet
+)]
 pub struct FootnoteEntry {
     /// The footnote for this entry. Its location can be used to determine the
     /// footnote counter state.
@@ -418,10 +427,11 @@ impl FootnoteContinuation {
         Ok(match self {
             Self::Content(content) => content.clone(),
             Self::Func(func) => func
-                .call(
+                .call::<crate::foundations::Value>(
                     engine,
                     Context::new(note.location(), Some(styles)).track(),
                     [note.clone().pack()],
+                    note.span(),
                 )?
                 .display(),
         })

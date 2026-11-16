@@ -25,7 +25,7 @@ use typst_html::{HtmlAttrs, HtmlElem, attr, tag};
 use typst_kit::datetime::Time;
 use typst_kit::diagnostics::DiagnosticWorld;
 use typst_kit::files::{FileLoader, FileStore, FsRoot};
-use typst_utils::{LazyHash, PicoStr};
+use typst_utils::{LazyHash, PicoStr, display_commit};
 
 use crate::Config;
 use crate::example::FRAME_RULE;
@@ -49,9 +49,6 @@ pub const DOCS_ROOT: PackageSpec = PackageSpec {
     version: PackageVersion { major: 0, minor: 0, patch: 0 },
 };
 
-/// The default entrypoint into the docs.
-const ENTRYPOINT: &str = "docs/main.typ";
-
 /// A world for docs compilation.
 pub struct DocWorld {
     /// Typst's standard library, extended with docs-specific functionality.
@@ -67,8 +64,11 @@ impl DocWorld {
     /// and entrypoint file.
     pub fn new(config: &Config) -> Self {
         Self {
-            library: LazyHash::new(library()),
-            files: FileStore::new(DocsFiles::new(config.input.as_deref())),
+            library: LazyHash::new(library(config.is_dev_version, &config.sys_inputs)),
+            files: FileStore::new(DocsFiles::new(
+                config.input.as_ref(),
+                &config.workspace,
+            )),
             now: Time::system(),
         }
     }
@@ -137,9 +137,9 @@ struct DocsFiles {
 }
 
 impl DocsFiles {
-    fn new(input: Option<&Path>) -> Self {
+    fn new(input: &Path, workspace: &Path) -> Self {
         // Resolve the system-global input path.
-        let path = input.unwrap_or(Path::new(ENTRYPOINT)).canonicalize().unwrap();
+        let path = input.canonicalize().unwrap();
 
         // Resolve the system-global root directory.
         let root: PathBuf = path.parent().unwrap().into();
@@ -154,8 +154,8 @@ impl DocsFiles {
         Self {
             main,
             project: FsRoot::new(root),
-            repo: FsRoot::new(".".into()),
-            docs: FsRoot::new("docs".into()),
+            repo: FsRoot::new(workspace.into()),
+            docs: FsRoot::new(workspace.join("docs")),
         }
     }
 
@@ -198,10 +198,25 @@ pub static FONTS: LazyLock<(LazyHash<FontBook>, Vec<Font>)> = LazyLock::new(|| {
 /// A standard library that is extended for docs compilation. Includes
 /// - an `stdx` module with various utilities
 /// - a few patched show rules
-fn library() -> Library {
-    let mut lib = Library::builder().with_features(Features::all()).build();
+fn library(is_dev_version: bool, sys_inputs: &[(String, String)]) -> Library {
+    // Convert the input pairs to a dictionary.
+    let inputs: Dict = sys_inputs
+        .iter()
+        .map(|(k, v)| (k.as_str().into(), v.as_str().into_value()))
+        .collect();
+
+    let mut lib = Library::builder([
+        typst_html::FORMAT,
+        typst_pdf::FORMAT,
+        typst_svg::FORMAT,
+        typst_render::FORMAT,
+        typst_bundle::FORMAT,
+    ])
+    .with_inputs(inputs)
+    .with_features(Features::all())
+    .build();
     let scope = lib.global.scope_mut();
-    scope.define("stdx", stdx_module());
+    scope.define("stdx", stdx_module(is_dev_version));
     lib.rules.replace(Target::Html, PATCHED_LINK_RULE);
     lib.rules.replace(Target::Html, PATCHED_IMAGE_RULE);
     lib.rules.register(Target::Paged, FRAME_RULE);
@@ -209,7 +224,7 @@ fn library() -> Library {
 }
 
 /// A module with various utilities for the docs.
-fn stdx_module() -> Module {
+fn stdx_module(is_dev_version: bool) -> Module {
     let mut scope = Scope::new();
     scope.define_elem::<ConfigElem>();
     scope.define_func::<str_from_path>();
@@ -223,10 +238,14 @@ fn stdx_module() -> Module {
     scope.define_func::<crate::reflect::math_class>();
     scope.define_func::<crate::reflect::is_accent>();
     scope.define_func::<crate::reflect::unicode_name>();
+    scope.define_func::<crate::reflect::emoji_ordering>();
     scope.define_func::<crate::reflect::latex_name>();
     scope.define_func::<crate::reflect::is_global_html_attr>();
     scope.define("commit", typst_utils::version().commit());
     scope.define("shorthands", crate::reflect::shorthands());
+    scope.define("raw-langs", crate::reflect::raw_langs());
+    scope.define("commit", display_commit(typst_utils::version().commit()));
+    scope.define("is-dev-version", is_dev_version);
     Module::new("stdx", scope)
 }
 

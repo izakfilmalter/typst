@@ -75,7 +75,7 @@ use crate::text::TextElem;
 /// ```example
 /// Start #h(1fr) End
 /// ```
-#[elem]
+#[elem(since = "forever")]
 pub struct AlignElem {
     /// The @alignment[alignment] along both axes.
     ///
@@ -102,15 +102,12 @@ pub struct AlignElem {
 /// Where to align something along an axis.
 ///
 /// Possible values are:
-/// - `start`: Aligns at the @direction.start[start] of the
-///   @text.dir[text direction].
-/// - `end`: Aligns at the @direction.end[end] of the @text.dir[text direction].
-/// - `left`: Align at the left.
-/// - `center`: Aligns in the middle, horizontally.
-/// - `right`: Aligns at the right.
-/// - `top`: Aligns at the top.
-/// - `horizon`: Aligns in the middle, vertically.
-/// - `bottom`: Align at the bottom.
+/// - Horizontal alignments: @alignment.start[`start`], @alignment.end[`end`],
+///   @alignment.left[`left`], @alignment.center[`center`], and
+///   @alignment.right[`right`].
+/// - Vertical alignments: @alignment.top[`top`], @alignment.horizon[`horizon`],
+///   and @alignment.bottom[`bottom`].
+/// - @alignment:2d-alignments[2D alignments], like `{center + horizon}`.
 ///
 /// These values are available globally and also in the alignment type's scope,
 /// so you can write either of the following two:
@@ -122,8 +119,8 @@ pub struct AlignElem {
 ///
 /// = 2D alignments <2d-alignments>
 /// To align along both axes at the same time, add the two alignments using the
-/// `+` operator. For example, `top + right` aligns the content to the top right
-/// corner.
+/// `+` operator. For example, `{top + right}` aligns the content to the top
+/// right corner.
 ///
 /// ```example
 /// #set page(height: 3cm)
@@ -139,7 +136,7 @@ pub struct AlignElem {
 /// #left.x \
 /// #left.y (none)
 /// ```
-#[ty(scope)]
+#[ty(scope, since = "forever")]
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum Alignment {
     H(HAlignment),
@@ -175,13 +172,81 @@ impl Alignment {
 
 #[scope]
 impl Alignment {
+    /// Horizontal alignment to the @direction.start[start] of the
+    /// @text.dir[text direction].
+    ///
+    /// ```example
+    /// #set text(dir: ltr)
+    /// #align(start, emoji.arrow.r)
+    ///
+    /// #set text(dir: rtl)
+    /// #align(start, emoji.arrow.l)
+    /// ```
+    #[constant(since = "forever")]
     pub const START: Self = Alignment::H(HAlignment::Start);
-    pub const LEFT: Self = Alignment::H(HAlignment::Left);
-    pub const CENTER: Self = Alignment::H(HAlignment::Center);
-    pub const RIGHT: Self = Alignment::H(HAlignment::Right);
+
+    /// Horizontal alignment to the @direction.end[end] of the
+    /// @text.dir[text direction].
+    ///
+    /// ```example
+    /// #set text(dir: ltr)
+    /// #align(end, emoji.arrow.r)
+    ///
+    /// #set text(dir: rtl)
+    /// #align(end, emoji.arrow.l)
+    /// ```
+    #[constant(since = "forever")]
     pub const END: Self = Alignment::H(HAlignment::End);
+
+    /// Left horizontal alignment.
+    ///
+    /// ```example
+    /// #align(left)[Left]
+    /// ```
+    #[constant(since = "forever")]
+    pub const LEFT: Self = Alignment::H(HAlignment::Left);
+
+    /// Center horizontal alignment.
+    ///
+    /// ```example
+    /// #align(center)[Center]
+    /// ```
+    #[constant(since = "forever")]
+    pub const CENTER: Self = Alignment::H(HAlignment::Center);
+
+    /// Right horizontal alignment.
+    ///
+    /// ```example
+    /// #align(right)[Right]
+    /// ```
+    #[constant(since = "forever")]
+    pub const RIGHT: Self = Alignment::H(HAlignment::Right);
+
+    /// Top vertical alignment.
+    ///
+    /// ```example
+    /// #set page(height: 3cm)
+    /// #align(top)[Top]
+    /// ```
+    #[constant(since = "forever")]
     pub const TOP: Self = Alignment::V(VAlignment::Top);
+
+    /// Middle vertical alignment.
+    ///
+    /// ```example
+    /// #set page(height: 3cm)
+    /// #align(horizon)[Horizon]
+    /// ```
+    #[constant(since = "forever")]
     pub const HORIZON: Self = Alignment::V(VAlignment::Horizon);
+
+    /// Bottom vertical alignment.
+    ///
+    /// ```example
+    /// #set page(height: 3cm)
+    /// #align(bottom)[Bottom]
+    /// ```
+    #[constant(since = "forever")]
     pub const BOTTOM: Self = Alignment::V(VAlignment::Bottom);
 
     /// The axis this alignment belongs to.
@@ -193,7 +258,7 @@ impl Alignment {
     /// #left.axis() \
     /// #bottom.axis()
     /// ```
-    #[func]
+    #[func(since = "0.7.0")]
     pub const fn axis(self) -> Option<Axis> {
         match self {
             Self::H(_) => Some(Axis::X),
@@ -210,7 +275,7 @@ impl Alignment {
     /// #center.inv() \
     /// #(left + bottom).inv()
     /// ```
-    #[func(title = "Inverse")]
+    #[func(title = "Inverse", since = "0.7.0")]
     pub const fn inv(self) -> Alignment {
         match self {
             Self::H(h) => Self::H(h.inv()),

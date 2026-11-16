@@ -51,7 +51,7 @@ use crate::foundations::{Context, Func, Str, Value, cast, func};
 /// = Second heading
 /// = Third heading
 /// ```
-#[func]
+#[func(since = "forever")]
 pub fn numbering(
     engine: &mut Engine,
     context: Tracked<Context>,
@@ -116,7 +116,9 @@ impl Numbering {
             Self::Pattern(pattern) => {
                 Value::Str(pattern.apply(Some((engine, span)), numbers).at(span)?.into())
             }
-            Self::Func(func) => func.call(engine, context, numbers.iter().copied())?,
+            Self::Func(func) => {
+                func.call(engine, context, numbers.iter().copied(), span)?
+            }
         })
     }
 
@@ -239,7 +241,7 @@ impl NumberingPattern {
         {
             let represented_number =
                 apply_system_with_fallback(engine, span, *system, number);
-            write!(fmt, "{represented_number}").unwrap()
+            write!(fmt, "{represented_number}").unwrap();
         }
         fmt.push_str(&self.suffix);
         fmt

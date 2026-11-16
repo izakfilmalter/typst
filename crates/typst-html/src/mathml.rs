@@ -100,31 +100,31 @@ pub(crate) static EQUATION_CSS_STYLES: LazyLock<EcoString> = LazyLock::new(|| {
     eco_format!(
         "\
 /* Alignment */
-mtable.{RIGHT_ALIGN_CLASS} mtd,
-mtable mtd.{RIGHT_ALIGN_CLASS},
-mtable.{LEFT_ALIGN_CLASS} mtd.{RIGHT_ALIGN_CLASS},
-mtable.{ALIGNED_CLASS} mtd:nth-child(odd) {{
+mtable.{RIGHT_ALIGN_CLASS} > mtr > mtd,
+mtable > mtr > mtd.{RIGHT_ALIGN_CLASS},
+mtable.{LEFT_ALIGN_CLASS} > mtr > mtd.{RIGHT_ALIGN_CLASS},
+mtable.{ALIGNED_CLASS} > mtr > mtd:nth-child(odd) {{
   justify-items: end;
   text-align: right;
 }}
-mtable.{CASES_CLASS} mtd,
-mtable.{LEFT_ALIGN_CLASS} mtd,
-mtable mtd.{LEFT_ALIGN_CLASS},
-mtable.{ALIGNED_CLASS} mtd:nth-child(even),
-math:is(:not([display])) > mtable.{MULTILINE_EQUATION_CLASS} mtd {{
+mtable.{CASES_CLASS} > mtr > mtd,
+mtable.{LEFT_ALIGN_CLASS} > mtr > mtd,
+mtable > mtr > mtd.{LEFT_ALIGN_CLASS},
+mtable.{ALIGNED_CLASS} > mtr > mtd:nth-child(even),
+math:is(:not([display])) > mtable.{MULTILINE_EQUATION_CLASS} > mtr > mtd {{
   justify-items: start;
   text-align: left;
 }}
-mtable.{CASES_CLASS} mtd,
-mtable.{ALIGNED_CLASS} mtd,
-mtable mtd.{FLUSHED_CLASS},
-mtable mtd.{LEFT_FLUSH_CLASS} {{
+mtable.{CASES_CLASS} > mtr > mtd,
+mtable.{ALIGNED_CLASS} > mtr > mtd,
+mtable > mtr > mtd.{FLUSHED_CLASS},
+mtable > mtr > mtd.{LEFT_FLUSH_CLASS} {{
   padding-left: 0;
 }}
-mtable.{CASES_CLASS} mtd,
-mtable.{ALIGNED_CLASS} mtd,
-mtable mtd.{FLUSHED_CLASS},
-mtable mtd.{RIGHT_FLUSH_CLASS} {{
+mtable.{CASES_CLASS} > mtr > mtd,
+mtable.{ALIGNED_CLASS} > mtr > mtd,
+mtable > mtr > mtd.{FLUSHED_CLASS},
+mtable > mtr > mtd.{RIGHT_FLUSH_CLASS} {{
   padding-right: 0;
 }}
 
@@ -139,13 +139,13 @@ mtd {{
 }}
 
 /* Equations */
-mtable.{MULTILINE_EQUATION_CLASS} mtd {{
+mtable.{MULTILINE_EQUATION_CLASS} > mtr > mtd {{
   math-depth: inherit;
   math-style: inherit;
   math-shift: inherit;
   padding: 0;
 }}
-math > mtable.{MULTILINE_EQUATION_CLASS} mtr:not(:last-child) mtd {{
+math > mtable.{MULTILINE_EQUATION_CLASS} > mtr:not(:last-child) > mtd {{
   padding-bottom: {};
 }}
 
@@ -234,7 +234,7 @@ enum NodePosition {
 }
 
 impl NodePosition {
-    fn get_form(&self) -> Form {
+    fn get_form(self) -> Form {
         match self {
             Self::Start => Form::Prefix,
             Self::Middle => Form::Infix,
@@ -630,7 +630,7 @@ fn handle_realized(
                 .with_optional_attr(attr::displaystyle, displaystyle)
                 .with_css(properties)
         });
-        ctx.push(if modified { ctx.apply_diverging(node, styles) } else { node })
+        ctx.push(if modified { ctx.apply_diverging(node, styles) } else { node });
     }
 
     // Push explicit rspace if it won't be added to the attributes of an `mo`.
@@ -1082,7 +1082,7 @@ fn handle_mathml(
 }
 
 /// Creates an `mo` element.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn make_mo(
     text: &str,
     span: Span,
@@ -1115,7 +1115,7 @@ fn make_mo(
     let info = OperatorInfo::of(
         text,
         form.unwrap_or(initial_form),
-        form.filter(|f| *f != initial_form).is_some(),
+        form.is_some_and(|f| f != initial_form),
     );
 
     // We force emitting `lspace` and `rspace` for a fraction slash (for
@@ -1311,7 +1311,7 @@ fn is_space_like(item: &MathItem) -> bool {
                 .all(is_space_like),
             _ => false,
         },
-        _ => false,
+        MathItem::Tag(_) => false,
     }
 }
 

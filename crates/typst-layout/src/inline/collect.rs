@@ -36,6 +36,9 @@ pub enum Item<'a> {
     Text(ShapedText<'a>),
     /// Absolute spacing between other items, and whether it is weak.
     Absolute(Abs, bool),
+    /// Spacing produced by paragraph geometry, such as a first-line or
+    /// hanging indent.
+    Indent(Abs),
     /// Fractional spacing between other items.
     Fractional(Fr, Option<(&'a Packed<BoxElem>, Locator<'a>, StyleChain<'a>)>),
     /// Layouted inline-level content.
@@ -48,18 +51,13 @@ pub enum Item<'a> {
 }
 
 impl<'a> Item<'a> {
-    /// Whether this is a tag item.
-    pub fn is_tag(&self) -> bool {
-        matches!(self, Self::Tag(_))
-    }
-
     /// Whether this item neither shows nor takes room: a tag, text without
     /// glyphs (a trailing space trimmed at a line break leaves one when a tag
     /// separates it from the text before) or zero spacing. Hanging punctuation
     /// looks past such items for the line's first or last glyph.
     pub fn is_inert(&self) -> bool {
         match self {
-            Self::Tag(_) => true,
+            Self::Tag(_) | Self::Skip(_) => true,
             Self::Text(shaped) => shaped.glyphs.is_empty(),
             Self::Absolute(v, _) => v.is_zero(),
             _ => false,
@@ -82,13 +80,27 @@ impl<'a> Item<'a> {
         }
     }
 
+    /// Whether this item can be skipped for the purposes of finding a leading
+    /// or trailing item.
+    pub fn is_skippable(&self) -> bool {
+        match self {
+            Self::Text(text) => text.glyphs.is_empty(),
+            Self::Indent(_) => true,
+            Self::Tag(_) => true,
+            Self::Skip(_) => true,
+            _ => false,
+        }
+    }
+
     /// Return the textual representation of this item: Either just itself (for
     /// a text item) or a replacement string (for any other item).
     pub fn textual(&self) -> &str {
         match self {
             Self::Text(shaped) => shaped.text,
             Self::Absolute(v, _) if *v < Abs::zero() => KERN_REPLACE,
-            Self::Absolute(_, _) | Self::Fractional(_, _) => SPACING_REPLACE,
+            Self::Absolute(_, _) | Self::Indent(_) | Self::Fractional(_, _) => {
+                SPACING_REPLACE
+            }
             Self::Frame(_) => OBJ_REPLACE,
             Self::Tag(_) => "",
             Self::Skip(s) => s,
@@ -104,7 +116,7 @@ impl<'a> Item<'a> {
     pub fn natural_width(&self) -> Abs {
         match self {
             Self::Text(shaped) => shaped.width(),
-            Self::Absolute(v, _) => *v,
+            Self::Absolute(v, _) | Self::Indent(v) => *v,
             Self::Frame(frame) => frame.width(),
             Self::Fractional(_, _) | Self::Tag(_) => Abs::zero(),
             Self::Skip(_) => Abs::zero(),
@@ -149,12 +161,12 @@ pub fn collect<'a>(
     let mut quoter = SmartQuoter::new();
 
     if !config.first_line_indent.is_zero() {
-        collector.push_item(Item::Absolute(config.first_line_indent, false));
+        collector.push_item(Item::Indent(config.first_line_indent));
         collector.spans.push(1, Span::detached());
     }
 
     if !config.hanging_indent.is_zero() {
-        collector.push_item(Item::Absolute(-config.hanging_indent, false));
+        collector.push_item(Item::Indent(-config.hanging_indent));
         collector.spans.push(1, Span::detached());
     }
 
@@ -257,7 +269,7 @@ pub fn collect<'a>(
                 "{} may not occur inside of a paragraph and was ignored",
                 child.func().name(),
             ));
-        };
+        }
 
         let len = collector.full.len() - prev_len;
         collector.spans.push(len, child.span());

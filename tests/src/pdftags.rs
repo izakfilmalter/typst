@@ -122,7 +122,7 @@ pub fn format(doc: &[u8]) -> StrResult<String> {
                     _ => None,
                 } {
                     marked_content.insert(mcid, mc);
-                };
+                }
             }
 
             Ok((page_ref, PageContent { idx, marked_content }))
@@ -304,6 +304,31 @@ fn format_annotation(f: &mut Formatter, page_ref: ObjRef, annot: &Dict) -> StrRe
             format_attr(f, "URI", val, format_str)?;
         }
     }
+    if let Some(val) = annot.get::<Object>(keys::RECT) {
+        format_attr(f, "Rect", val, |f, val| format_array(f, val, format_float))?;
+    }
+    if let Some(val) = annot.get::<Object>(keys::QUADPOINTS) {
+        format_attr(f, "QuadPoints", val, |f, val| {
+            let Object::Array(array) = val else { return Err(()) };
+            let mut iter = array.iter::<Object>();
+
+            while let quad = [(); 8].map(|()| iter.next())
+                && quad.iter().flatten().count() != 0
+            {
+                writeln!(f).ok();
+                write!(f, "- [").ok();
+                for (i, val) in quad.iter().flatten().enumerate() {
+                    if i != 0 {
+                        write!(f, ", ").ok();
+                    }
+                    format_float(f, val)?;
+                }
+                write!(f, "]").ok();
+            }
+            {}
+            Ok(())
+        })?;
+    }
     f.indent -= 1;
 
     Ok(())
@@ -348,7 +373,7 @@ fn format_tag_attrs(f: &mut Formatter, tag: &Dict) -> StrResult<()> {
                     Ok(*idx)
                 })
                 .collect::<StrResult<Vec<_>>>()?;
-            indices.sort();
+            indices.sort_unstable();
 
             for idx in indices {
                 let (name, fmt) = ATTRIBUTES[idx];
@@ -476,7 +501,7 @@ fn format_byte_str(f: &mut Formatter, val: &Object) -> Result<(), ()> {
         write!(f, "{str:?}").ok();
     } else {
         write!(f, "0x").ok();
-        for b in bytes.iter() {
+        for b in bytes {
             write!(f, "{b:02x}").ok();
         }
     }
@@ -487,7 +512,7 @@ fn format_color(f: &mut Formatter, val: &Object) -> Result<(), ()> {
     let Object::Array(array) = val else { return Err(()) };
     if array.raw_iter().count() != 3 {
         return Err(());
-    };
+    }
     let mut iter = array.iter::<Number>();
     let [r, g, b] = std::array::from_fn(|_| {
         let n = iter.next().unwrap().as_f64();

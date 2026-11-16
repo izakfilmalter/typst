@@ -46,7 +46,7 @@ use crate::foundations::{
 /// $arrow.r$ \
 /// $arrow.t.quad$
 /// ```
-#[ty(scope, cast)]
+#[ty(scope, cast, since = "forever")]
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct Symbol(SymbolInner);
 
@@ -130,11 +130,11 @@ impl Symbol {
     }
 
     /// Try to get the function associated with the symbol, if any.
-    pub fn func(&self) -> StrResult<Func> {
+    pub fn func(&self) -> Result<Func, Uncallable> {
         let value = self.get();
         crate::math::accent::get_accent_func(value)
             .or_else(|| crate::math::get_lr_wrapper_func(value))
-            .ok_or_else(|| eco_format!("symbol {self} is not callable"))
+            .ok_or_else(|| Uncallable(self.clone()))
     }
 
     /// Apply a modifier to the symbol.
@@ -215,7 +215,7 @@ impl Symbol {
     /// #envelope.lightning
     /// #envelope.fly
     /// ```
-    #[func(constructor)]
+    #[func(constructor, since = "forever")]
     pub fn construct(
         span: Span,
         /// The variants of the symbol.
@@ -269,7 +269,7 @@ impl Symbol {
             }
 
             // Canonicalize the modifier order.
-            modifiers.sort();
+            modifiers.sort_unstable();
 
             // Ensure that there are no duplicate modifiers.
             if let Some(ms) = modifiers.windows(2).find(|ms| ms[0] == ms[1]) {
@@ -472,5 +472,23 @@ impl Repr for SymbolElem {
     /// Use a custom repr that matches normal content.
     fn repr(&self) -> EcoString {
         eco_format!("[{}]", self.text)
+    }
+}
+
+/// An error that indicates that a symbol is not callable.
+#[derive(Debug)]
+pub struct Uncallable(Symbol);
+
+impl std::error::Error for Uncallable {}
+
+impl Display for Uncallable {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "symbol {} is not callable", self.0)
+    }
+}
+
+impl From<Uncallable> for EcoString {
+    fn from(err: Uncallable) -> Self {
+        eco_format!("{err}")
     }
 }

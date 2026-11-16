@@ -219,7 +219,7 @@ impl<'a> Locator<'a> {
 }
 
 #[comemo::track]
-#[allow(clippy::needless_lifetimes)]
+#[expect(clippy::elidable_lifetime_names, reason = "required for `comemo::track`")]
 impl<'a> Locator<'a> {
     /// Resolves the locator based on its local and the outer information.
     fn resolve(&self) -> Resolved {
@@ -280,7 +280,11 @@ impl<'a> SplitLocator<'a> {
     /// (fork) `next` for an element: keyed by its span, or, with
     /// `TYPST_LOCATOR_KEY=content`, by its span and its content's hash, so that an element
     /// keeps its locator when elements of the same span come or go before it.
-    pub fn next_elem<E: Hash>(&mut self, span: &typst_syntax::Span, elem: &E) -> Locator<'a> {
+    pub fn next_elem<E: Hash>(
+        &mut self,
+        span: &typst_syntax::Span,
+        elem: &E,
+    ) -> Locator<'a> {
         if locator_by_content() {
             self.next_inner(typst_utils::hash128(&(span, elem)))
         } else {
@@ -316,7 +320,7 @@ impl<'a> SplitLocator<'a> {
             Resolved::Hash(hash) => Location::new(hash),
             Resolved::Measure(base, measure_span) => {
                 let introspection =
-                    MeasureIntrospection { key, base, elem_span, measure_span };
+                    MeasureIntrospection { key, base, measure_span, elem_span };
 
                 // If we aren't able to find a matching element in the document,
                 // default to the base location, so that it's at least remotely

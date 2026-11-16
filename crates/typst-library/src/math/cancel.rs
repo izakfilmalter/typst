@@ -1,3 +1,5 @@
+use typst_syntax::LooselySpanned;
+
 use crate::foundations::{Content, Func, Smart, cast, elem};
 use crate::layout::{Angle, Em, Length, Ratio, Rel};
 use crate::math::Mathy;
@@ -14,7 +16,7 @@ use crate::visualize::Stroke;
 /// $ (a dot b dot cancel(x)) /
 ///     cancel(x) $
 /// ```
-#[elem(Mathy)]
+#[elem(since = "0.3.0", Mathy)]
 pub struct CancelElem {
     /// The content over which the line should be placed.
     #[required]
@@ -73,7 +75,7 @@ pub struct CancelElem {
     ///   cancel(1/(1+x), angle: #(a => a + 45deg))
     ///   cancel(1/(1+x), angle: #(a => a + 90deg)) $
     /// ```
-    pub angle: Smart<CancelAngle>,
+    pub angle: LooselySpanned<Smart<CancelAngle>>,
 
     /// How to @stroke[stroke] the cancel line.
     ///
@@ -95,6 +97,17 @@ pub struct CancelElem {
         ..Default::default()
     })]
     pub stroke: Stroke,
+
+    /// Whether the line is placed behind the content.
+    ///
+    /// ```example
+    /// >>> #set page(width: 140pt)
+    /// #set math.cancel(stroke: red + 2pt)
+    /// $ cancel("behind", background: #true) \
+    ///   cancel("in front", background: #false) $
+    /// ```
+    #[default(false)]
+    pub background: bool,
 }
 
 /// Defines the cancel line.

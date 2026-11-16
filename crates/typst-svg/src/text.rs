@@ -69,11 +69,13 @@ impl SVGRenderer<'_> {
             let (id, path) = self.glyphs.insert_with_val(key, || {
                 let mut builder = SvgPathBuilder::with_scale(scale);
                 text.font.ttf().outline_glyph(glyph_id, &mut builder)?;
-                Some(RenderedGlyph::Path(builder.finsish()))
+                Some(RenderedGlyph::Path(builder.finish()))
             });
 
             if path.is_some() {
-                self.render_path_glyph(svg, state, text, glyph_id, x_offset, y_offset, id)
+                self.render_path_glyph(
+                    svg, state, text, glyph_id, x_offset, y_offset, id,
+                );
             }
         } else {
             // Image glyphs apply a `scale` at use site, since colr, svg-, and
@@ -111,7 +113,7 @@ impl SVGRenderer<'_> {
     }
 
     /// Render a pre-scaled path glyph defined by an outline.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn render_path_glyph(
         &mut self,
         svg: &mut SvgElem,

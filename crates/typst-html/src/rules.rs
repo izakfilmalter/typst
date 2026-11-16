@@ -278,6 +278,7 @@ const FIGURE_RULE: ShowFn<FigureElem> = |elem, _, styles| {
     Ok(BlockElem::packed(
         HtmlElem::new(tag::figure)
             .with_body(Some(realized))
+            .with_optional_attr(attr::aria_label, elem.alt.get_cloned(styles))
             .pack()
             .spanned(elem.span()),
     ))
@@ -582,7 +583,7 @@ fn show_cellgrid(grid: &CellGrid, styles: StyleChain, span: Span) -> Content {
     let tr = |tag, row: &[Entry]| {
         let row = row
             .iter()
-            .flat_map(|entry| entry.as_cell())
+            .filter_map(|entry| entry.as_cell())
             .map(|cell| show_cell(tag, cell, styles));
         elem(tag::tr, Content::sequence(row))
     };
@@ -625,7 +626,7 @@ fn show_cellgrid(grid: &CellGrid, styles: StyleChain, span: Span) -> Content {
 
     let (y_offset, header) = if first_mid_table_header > 0 {
         let removed_header_rows =
-            header_range(grid.headers.get(first_mid_table_header - 1).unwrap()).end;
+            header_range(&grid.headers[first_mid_table_header - 1]).end;
         let rows = rows.drain(..removed_header_rows);
 
         (
@@ -790,7 +791,7 @@ const IMAGE_RULE: ShowFn<ImageElem> = |elem, engine, styles| {
     attrs.push(attr::width, cast(image.width()));
     attrs.push(attr::height, cast(image.height()));
 
-    let mut css = css::Properties::build((engine, elem.span()));
+    let mut css = css::Properties::build(engine.binding_guard(elem.span()));
 
     // TODO: Exclude in semantic profile.
     if let Some(value) = typst_svg::convert_image_scaling(image.scaling()) {
