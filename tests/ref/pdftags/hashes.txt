@@ -1,4 +1,4 @@
-876f43b90183175619b72e53119115a4 bibliography-basic
+8156f6c17502bab8e022c5906f52304c bibliography-basic
 a77ce3055b1c04e8eb625e32d2e6bbca break-tags-nested-parbreak
 f03ed0d4cdc942f78b865d2a2a14cad6 break-tags-nested-parbreak-with-nested-groups
 5c4f805cf0adecbc82fbaeaf0afd791b deco-tags-different-color
@@ -20,7 +20,7 @@ a435ca208442488e4e2aabe6e6099ba0 disable-tags-artifact
 3aac7b296f56f38b0fcc052600ee7f4e disable-tags-partially-hidden-list
 43634e3eaf8b049944de5d91b422d4f4 disable-tags-tiling
 859ace8e2c8a260057c11b2977712425 enum-number-override-nested
-9c0f9599408bfaaba63dccf83734ecff figure-basic
+fafc3e65c5f7045e68de22b33d293807 figure-basic
 cb9571403237411f8d62aa142f1f5c80 figure-tags-additional-caption-inside-body
 33b17e86c8121a1a5694dbaf9c68927a figure-tags-alt-with-different-lang
 4563e5065ddaf5f37eb5eed4c99e01ed figure-tags-bbox-of-square-with-stroke
@@ -40,7 +40,7 @@ d30d960cd017a77c60260a7386df8266 figure-tags-with-alt-flatten-content-basic
 ddedb364445863b5ea2190f440daeab7 footnote-tags-ref-to-other-footnote
 aedfe180f59a9463e715ae5587a5ef34 grid-headers
 1c7e8427b21e7871f73a528eef89bc49 grid-tags-cell-breaking
-a2c6af5f2ff65534067dc2e2e2f49cc6 grid-tags-internal-grid-layout-breaking-bibliography
+f8ea7341d69e97acec642bb3afe6f8a7 grid-tags-internal-grid-layout-breaking-bibliography
 2babf3c56121b182a8f1f45411eeacba grid-tags-rowspan
 6d93d5637c6dd5edc2ccca24509367d3 grid-tags-rowspan-split-3
 823b53d909fa38c71d03bf35b4ba1a44 heading-offset

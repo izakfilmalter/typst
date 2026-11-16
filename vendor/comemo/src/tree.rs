@@ -80,6 +80,7 @@ impl<C: Hash, T> CallTree<C, T> {
     }
 
     /// Retrieves the output value for the given key and oracle.
+    #[cfg(test)]
     pub fn get(&self, key: u128, mut oracle: impl FnMut(&C) -> u128) -> Option<&T> {
         let mut cursor = *self.start.get(&key)?;
         loop {

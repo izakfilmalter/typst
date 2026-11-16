@@ -233,6 +233,7 @@ macro_rules! multi {
             }
         }
 
+        #[allow(dead_code)] // The zero-argument macro expansion has no mapped sinks.
         #[derive(Copy, Clone)]
         pub struct MappedSink<const I: usize, S>(S);
 

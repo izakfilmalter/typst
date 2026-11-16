@@ -153,11 +153,11 @@ impl<'a, 'b> Distributor<'a, 'b, '_, '_, '_> {
             Child::Line(line) => self.line(line)?,
             Child::Single(single) => {
                 self.widow = None;
-                self.single(single)?
+                self.single(single)?;
             }
             Child::Multi(multi) => {
                 self.widow = None;
-                self.multi(multi)?
+                self.multi(multi)?;
             }
             Child::Placed(placed) => self.placed(placed)?,
             Child::Flush => self.flush()?,
@@ -616,7 +616,7 @@ impl<'a, 'b> Distributor<'a, 'b, '_, '_, '_> {
 
     /// Processes a column balance marker: the region ends here and the
     /// composer is told to balance its columns (see
-    /// [`Composer::balance`](super::compose)). Weak spacing, weak breaks and
+    /// [`Composer::balance`](mod@super::compose)). Weak spacing, weak breaks and
     /// tags directly after the marker stay in this region, so that a page
     /// break following the marker doesn't produce an empty page.
     ///
@@ -665,7 +665,7 @@ impl<'a, 'b> Distributor<'a, 'b, '_, '_, '_> {
             // the flow, restore the saved checkpoint to move the sticky
             // suffix to the next region.
             if let Some(snapshot) = self.sticky.take() {
-                self.restore(snapshot)
+                self.restore(snapshot);
             }
         }
 

@@ -229,7 +229,11 @@ fn configuration(
         } else {
             (0, Abs::zero())
         },
-        hang_flex: if situation.is_some() && base.hang.0 > 0 && !base.hang.1.is_zero() && justify {
+        hang_flex: if situation.is_some()
+            && base.hang.0 > 0
+            && !base.hang.1.is_zero()
+            && justify
+        {
             base.hang_flex
         } else {
             Abs::zero()
@@ -262,7 +266,11 @@ fn configuration(
 impl Config {
     /// The paragraph shape's indent of line `index` (zero-based).
     fn hang_at(&self, index: usize) -> Abs {
-        if index < self.hang.0 { self.hang.1 + self.hang_shift.get() } else { Abs::zero() }
+        if index < self.hang.0 {
+            self.hang.1 + self.hang_shift.get()
+        } else {
+            Abs::zero()
+        }
     }
 }
 

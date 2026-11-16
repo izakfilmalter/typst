@@ -146,7 +146,12 @@ fn compile_impl<T: Output>(
         // Keep only memoised results that the previous iteration used: without this,
         // every relayout of an introspection-heavy document stacks a full cache.
         if !history.is_empty() {
-            comemo::evict(std::env::var("TYPST_EVICT_AGE").ok().and_then(|v| v.parse().ok()).unwrap_or(0));
+            comemo::evict(
+                std::env::var("TYPST_EVICT_AGE")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0),
+            );
         }
         let introspector = history
             .last()
@@ -167,9 +172,15 @@ fn compile_impl<T: Output>(
         document = T::create(&mut engine, &content, styles)?;
         if std::env::var_os("TYPST_ITER_LOG").is_some() {
             let rss = std::fs::read_to_string("/proc/self/status").ok().and_then(|s| {
-                s.lines().find(|l| l.starts_with("VmRSS")).map(|l| l.split_whitespace().nth(1).unwrap_or("").to_string())
+                s.lines()
+                    .find(|l| l.starts_with("VmRSS"))
+                    .map(|l| l.split_whitespace().nth(1).unwrap_or("").to_string())
             });
-            eprintln!("typst: iteration {} done, rss {} kB", iterations + 1, rss.unwrap_or_default());
+            eprintln!(
+                "typst: iteration {} done, rss {} kB",
+                iterations + 1,
+                rss.unwrap_or_default()
+            );
         }
 
         if timed!("check stabilized", constraint.validate(document.introspector())) {

@@ -164,13 +164,13 @@ Hello-#text(red)[world]
 #set text(costs: (hyphenation: auto))
 
 --- costs-invalid-key eval ---
-// Error: 18-52 unexpected key "invalid-key", valid keys are "hyphenation", "runt", "widow", and "orphan"
+// Error: 18-52 unexpected key "invalid-key", valid keys are "hyphenation", "runt", "widow", "orphan", "overstretch", "contrast", and "capitalized"
 #set text(costs: (hyphenation: 1%, invalid-key: 3%))
 
 --- costs-access paged empty ---
 #set text(costs: (hyphenation: 1%, runt: 2%))
 #set text(costs: (widow: 3%))
-#context test(text.costs, (hyphenation: 1%, runt: 2%, widow: 3%, orphan: 100%))
+#context test(text.costs, (hyphenation: 1%, runt: 2%, widow: 3%, orphan: 100%, overstretch: 100%, contrast: 0%, capitalized: 100%))
 
 --- issue-hyphenate-after-tag paged ---
 // Ensure that an invisible tag does not prevent hyphenation.

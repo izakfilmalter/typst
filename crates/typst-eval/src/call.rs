@@ -931,6 +931,27 @@ impl<'a> CapturesVisitor<'a> {
     }
 }
 
+/// (fork) Whether a call of this closure is memoized: always for a `context` block; for a
+/// function, only if its syntax is at least `TYPST_CLOSURE_MEMO_MIN` bytes long (default 150;
+/// 0: every call, as upstream). Small functions called in hot loops (a predicate passed to
+/// `filter` or `any`, a line-numbering function) cost more to hash, store and look up than to
+/// run again, and their results fill the cache: in the anf sample a layout iteration took 40 %
+/// less CPU without them. Not memoizing a call never changes its result.
+fn closure_memo_worthy(closure: &LazyHash<Closure>) -> bool {
+    static MIN: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let min = *MIN.get_or_init(|| {
+        std::env::var("TYPST_CLOSURE_MEMO_MIN")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(150)
+    });
+    min == 0
+        || match closure.node {
+            ClosureNode::Context(_) => true,
+            ClosureNode::Closure(ref node) => node.len() >= min,
+        }
+}
+
 #[cfg(test)]
 mod tests {
     use typst_syntax::parse;
@@ -1042,22 +1063,4 @@ mod tests {
         test(s, "$ foo.x_bar $", &["bar", "foo"]);
         test(s, "$ #x_bar.x-bar $", &["x_bar"]);
     }
-}
-
-/// (fork) Whether a call of this closure is memoized: always for a `context` block; for a
-/// function, only if its syntax is at least `TYPST_CLOSURE_MEMO_MIN` bytes long (default 150;
-/// 0: every call, as upstream). Small functions called in hot loops (a predicate passed to
-/// `filter` or `any`, a line-numbering function) cost more to hash, store and look up than to
-/// run again, and their results fill the cache: in the anf sample a layout iteration took 40 %
-/// less CPU without them. Not memoizing a call never changes its result.
-fn closure_memo_worthy(closure: &LazyHash<Closure>) -> bool {
-    static MIN: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    let min = *MIN.get_or_init(|| {
-        std::env::var("TYPST_CLOSURE_MEMO_MIN").ok().and_then(|v| v.parse().ok()).unwrap_or(150)
-    });
-    min == 0
-        || match closure.node {
-            ClosureNode::Context(_) => true,
-            ClosureNode::Closure(ref node) => node.len() >= min,
-        }
 }

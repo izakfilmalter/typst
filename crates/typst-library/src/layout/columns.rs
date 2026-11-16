@@ -226,6 +226,16 @@ pub struct ColbreakElem {
     pub weak: bool,
 }
 
+/// Where footnotes are placed in balanced columns.
+#[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Hash, Cast)]
+pub enum BalanceNotes {
+    /// Under the balanced text (the default).
+    #[default]
+    Raise,
+    /// At the foot of the full region.
+    Foot,
+}
+
 /// Balances the columns of the current page or container up to this point.
 ///
 /// The content of the current page's columns (or the columns of the enclosing
@@ -256,15 +266,6 @@ pub struct ColbreakElem {
 /// #colbalance()
 /// ```
 /// Where a balanced page's footnotes stand, see [`ColbalanceElem::notes`].
-#[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Hash, Cast)]
-pub enum BalanceNotes {
-    /// Under the balanced text (the default).
-    #[default]
-    Raise,
-    /// At the foot of the full region.
-    Foot,
-}
-
 #[elem(title = "Column Balance")]
 pub struct ColbalanceElem {
     /// If set, the balanced column height is a whole multiple of this length,

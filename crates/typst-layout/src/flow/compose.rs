@@ -194,10 +194,9 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
                 Err(Stop::Cut(..)) => unreachable!(),
                 Err(Stop::Relayout(PlacementScope::Parent)) => {
                     *self.work = checkpoint.clone();
-                    continue;
                 }
                 Err(Stop::Error(err)) => return Err(err),
-            };
+            }
         };
 
         // Balance the columns if the region ended at a balance marker.
@@ -348,6 +347,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
     /// Lays out the region's columns with the given `height`. Returns the
     /// frame and the resulting work if the balance marker was reached in this
     /// region without displacing more insertions than the `budget`.
+    #[expect(clippy::too_many_arguments)]
     fn balance_trial(
         &mut self,
         locator: &Locator,
@@ -714,12 +714,10 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
                     self.column_insertions = initial.0.clone();
                     self.footnote_spill = initial.1.clone();
                     self.footnote_queue = initial.2.clone();
-                    continue;
                 }
                 Err(Stop::Finish(_)) => unreachable!(),
                 Err(Stop::Relayout(PlacementScope::Column)) => {
                     *self.work = checkpoint.clone();
-                    continue;
                 }
                 err => return err,
             }
@@ -1155,7 +1153,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         for (_, note) in nested {
             match self.footnote(note, regions, nested_ctx) {
                 // This footnote was already processed or queued.
-                Ok(_) => {}
+                Ok(()) => {}
                 // Footnotes always request a relayout when processed for the
                 // first time, so we ignore a relayout request since we're
                 // about to do so afterwards. Without this check, the first

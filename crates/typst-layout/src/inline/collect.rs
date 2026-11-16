@@ -51,11 +51,6 @@ pub enum Item<'a> {
 }
 
 impl<'a> Item<'a> {
-    /// Whether this is a tag item.
-    pub fn is_tag(&self) -> bool {
-        matches!(self, Self::Tag(_))
-    }
-
     /// Whether this item neither shows nor takes room: a tag, text without
     /// glyphs (a trailing space trimmed at a line break leaves one when a tag
     /// separates it from the text before) or zero spacing. Hanging punctuation

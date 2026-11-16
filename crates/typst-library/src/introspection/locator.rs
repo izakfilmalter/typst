@@ -280,7 +280,11 @@ impl<'a> SplitLocator<'a> {
     /// (fork) `next` for an element: keyed by its span, or, with
     /// `TYPST_LOCATOR_KEY=content`, by its span and its content's hash, so that an element
     /// keeps its locator when elements of the same span come or go before it.
-    pub fn next_elem<E: Hash>(&mut self, span: &typst_syntax::Span, elem: &E) -> Locator<'a> {
+    pub fn next_elem<E: Hash>(
+        &mut self,
+        span: &typst_syntax::Span,
+        elem: &E,
+    ) -> Locator<'a> {
         if locator_by_content() {
             self.next_inner(typst_utils::hash128(&(span, elem)))
         } else {

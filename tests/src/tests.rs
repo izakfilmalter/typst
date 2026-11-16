@@ -61,6 +61,11 @@ fn main() {
 }
 
 fn setup() {
+    // The upstream convergence tests assert the full diagnostic history.
+    // SAFETY: setup runs at process startup, before the test runner starts
+    // its thread pool or reads environment variables on worker threads.
+    unsafe { std::env::set_var("TYPST_FULL_HISTORY", "1") };
+
     // Make all paths relative to the workspace. That's nicer for IDEs when
     // clicking on paths printed to the terminal.
     let workspace_dir =
