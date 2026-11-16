@@ -304,4 +304,10 @@ pub struct ColbalanceElem {
     /// full region, its last entry where a full page puts it.
     #[default(BalanceNotes::Raise)]
     pub notes: BalanceNotes,
+
+    /// Prefer a full first column on short two-column pages. If the second
+    /// column has content but fewer than this many paragraph lines, shift the least
+    /// possible content into it until it reaches this number of lines. If everything fits in the
+    /// first column, leave the second empty.
+    pub min_last: Option<usize>,
 }

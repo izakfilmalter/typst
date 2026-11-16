@@ -134,11 +134,13 @@ impl<'a> Collector<'a, '_, '_> {
                 let offset = elem.offset.get(styles).resolve(styles);
                 let level_notes = elem.level_notes.get(styles);
                 let notes_foot = elem.notes.get(styles) == BalanceNotes::Foot;
+                let min_last = elem.min_last.get(styles);
                 self.output.push(Child::Balance(BalanceSpec {
                     snap,
                     offset,
                     level_notes,
                     notes_foot,
+                    min_last,
                 }));
             } else if child.is::<PagebreakElem>() {
                 bail!(
@@ -501,6 +503,8 @@ pub struct BalanceSpec {
     pub level_notes: bool,
     /// Whether the footnote areas stand at the foot of the full region.
     pub notes_foot: bool,
+    /// Minimum paragraph lines for a nonempty second column in left-first mode.
+    pub min_last: Option<usize>,
 }
 
 /// A child that encapsulates a layouted line of a paragraph.
