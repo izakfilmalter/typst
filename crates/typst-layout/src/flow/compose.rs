@@ -13,7 +13,7 @@ use typst_library::introspection::{
 };
 use typst_library::layout::{
     Abs, Axes, Dir, FixedAlignment, Fr, Fragment, Frame, FrameItem, FrameParent, Inherit,
-    OuterHAlignment, PlacementScope, Point, Region, Regions, Rel, Size,
+    OuterHAlignment, PlacementScope, Point, Region, Regions, Rel, Size, Transform,
 };
 use typst_library::model::ArtifactKind;
 use typst_library::model::{
@@ -64,6 +64,7 @@ pub fn compose(
         flow_used: Abs::zero(),
         used: Abs::zero(),
         extents: vec![],
+        line_counts: vec![],
         reserves: vec![],
         notes_foot: None,
         flow_cap: None,
@@ -129,6 +130,8 @@ pub struct Composer<'a, 'b, 'x, 'y> {
     /// ends (below its top insertions) and the height of its bottom
     /// insertions (floats, footnote separator and entries).
     extents: Vec<(Abs, Abs)>,
+    /// Actual paragraph-line markers in each laid-out column.
+    line_counts: Vec<usize>,
     /// In a balanced layout with level notes: space reserved at the foot of
     /// each column (by index) below its bottom insertions, so that they start
     /// where the deepest column's do.
@@ -253,6 +256,37 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         let height = |k: usize| offset + step * k as f64;
         let max = ((full - offset) / step + 1e-6).floor() as usize;
         let max = if height(max).approx_eq(full) { max.saturating_sub(1) } else { max };
+
+        // In left-first mode keep the ordinary full-height layout unless a
+        // nonempty second column is too short. Search from the full height
+        // downward, so the first acceptable split moves as little as possible.
+        if let Some(min_last) = spec.min_last.filter(|v| *v > 0)
+            && self.config.columns.count == 2
+        {
+            let last = self.line_counts.get(1).copied().unwrap_or(0);
+            if last == 0 || last >= min_last {
+                return Ok(normal);
+            }
+            let mut best = None;
+            for k in (1..=max).rev() {
+                let trial = self.balance_trial(
+                    &locator, pod, checkpoint, &initial, height(k), budget, false,
+                    step, spec.notes_foot.then_some(full),
+                )?;
+                if trial.is_some()
+                    && self.line_counts.get(1).is_some_and(|&n| n >= min_last)
+                {
+                    best = trial;
+                    break;
+                }
+            }
+            self.page_insertions = page_insertions;
+            self.balance = None;
+            return Ok(match best {
+                Some((frame, work)) => { *self.work = work; frame }
+                None => { *self.work = normal_work; normal }
+            });
+        }
 
         // Whether content fits is not monotonic in the height: e.g. a
         // footnote entry that doesn't fit at all lets its marker's line move
@@ -535,6 +569,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
 
         // Create a backlog for multi-column layout.
         self.extents.clear();
+        self.line_counts.clear();
         let count = self.config.columns.count;
         let column_height = regions.size.y;
         let first = balance.unwrap_or(column_height);
@@ -590,6 +625,9 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
                 frame
             };
 
+            // Count visible body lines, excluding footnotes and blank spacing.
+            let flow_end = self.extents.get(i).map_or(Abs::zero(), |e| e.0);
+            self.line_counts.push(count_visible_par_lines(&frame, flow_end));
             total_used_height += used_height;
             if !regions.expand.y {
                 output.size_mut().y.set_max(frame.height());
@@ -1417,6 +1455,52 @@ fn mark_continuations(
     }
 
     Ok(())
+}
+
+/// Count marked paragraph lines that contain visible text. Paragraph line markers
+/// alone can also mark deliberately empty lines, so require an actual text run on
+/// the same baseline. Footnote text below the flow is excluded by `flow_end`.
+fn count_visible_par_lines(frame: &Frame, flow_end: Abs) -> usize {
+    fn collect(frame: &Frame, ts: Transform, marks: &mut Vec<Abs>, text: &mut Vec<(Abs, Abs, usize)>, flow_end: Abs) {
+        for (pos, item) in frame.items() {
+            match item {
+                FrameItem::Group(g) => collect(&g.frame, ts.pre_concat(Transform::translate(pos.x, pos.y)).pre_concat(g.transform), marks, text, flow_end),
+                FrameItem::Tag(Tag::Start(elem, _)) if elem.to_packed::<ParLineMarker>().is_some() => {
+                    let y = pos.transform(ts).y;
+                    if y <= flow_end + Abs::pt(1.0) { marks.push(y); }
+                }
+                FrameItem::Text(t) if !t.text.trim().is_empty() => {
+                    let y = pos.transform(ts).y;
+                    if y <= flow_end + Abs::pt(1.0) { text.push((y, t.size, t.text.chars().filter(|c| !c.is_whitespace()).count())); }
+                }
+                _ => {}
+            }
+        }
+    }
+    let (mut marks, mut text) = (vec![], vec![]);
+    collect(frame, Transform::identity(), &mut marks, &mut text, flow_end);
+    // Paragraph markers can coexist with deliberately unnumbered material in
+    // the same column. Count each visible marked baseline once, then count
+    // uncovered visible baselines; ignore note calls and oversized single
+    // drop glyphs, which are not additional lines of body text.
+    marks.sort_by(|a, b| a.to_pt().total_cmp(&b.to_pt()));
+    marks.dedup_by(|a, b| (*a - *b).abs() <= Abs::pt(5.0));
+    let marked = marks.iter().filter(|&&y| text.iter().any(|&(ty, size, _)| (y - ty).abs() <= size.min(Abs::pt(12.0)) * 0.55)).count();
+    text.retain(|&(y, size, chars)| {
+        size >= Abs::pt(7.0)
+            && !(size > Abs::pt(18.0) && chars == 1)
+            && !marks.iter().any(|&m| (y - m).abs() <= Abs::pt(6.0))
+    });
+    text.sort_by(|a, b| a.0.to_pt().total_cmp(&b.0.to_pt()));
+    let mut previous = None;
+    let mut unmarked = 0;
+    for (y, _, _) in text {
+        if previous.is_none_or(|p: Abs| (y - p).abs() > Abs::pt(5.0)) {
+            previous = Some(y);
+            unmarked += 1;
+        }
+    }
+    marked + unmarked
 }
 
 /// The baseline and horizontal text extent of a frame's first line of text.
