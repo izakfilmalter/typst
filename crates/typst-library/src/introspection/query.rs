@@ -187,7 +187,7 @@ pub fn query(
 /// One introspection for the whole result, where `query` and a `page()` per match make
 /// one per match. A book-wide index (every line marker by page) read this way costs one
 /// tracked call in every memoized function that reads it, not one per match.
-#[func(contextual)]
+#[func(contextual, since = "unreleased")]
 pub fn query_pages(
     engine: &mut Engine,
     context: Tracked<Context>,
@@ -215,7 +215,7 @@ pub fn query_pages(
 /// (fork) `query(target)` with each match's position: an array of `(element, position)`
 /// pairs in the order of `query`, the position as `element.location().position()` gives
 /// it. One introspection for the whole result (see `query-pages`).
-#[func(contextual)]
+#[func(contextual, since = "unreleased")]
 pub fn query_positions(
     engine: &mut Engine,
     context: Tracked<Context>,

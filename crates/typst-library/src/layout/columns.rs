@@ -266,7 +266,7 @@ pub enum BalanceNotes {
 /// #colbalance()
 /// ```
 /// Where a balanced page's footnotes stand, see [`ColbalanceElem::notes`].
-#[elem(title = "Column Balance")]
+#[elem(title = "Column Balance", since = "unreleased")]
 pub struct ColbalanceElem {
     /// If set, the balanced column height is a whole multiple of this length,
     /// measured from the top of the columns. With a fixed line pitch, setting
