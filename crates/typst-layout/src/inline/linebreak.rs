@@ -519,6 +519,9 @@ fn linebreak_optimized_bounded<'a>(
         /// search made). An unbounded search kept every line it built.
         bp: Breakpoint,
         freed: bool,
+        /// (fork) Whether this line is set ragged (a shape's first line, where
+        /// `par.hang.ragged` allows it).
+        ragged: bool,
     }
 
     let shape = p.config.hang.0;
@@ -536,6 +539,7 @@ fn linebreak_optimized_bounded<'a>(
         count: 0,
         bp: Breakpoint::Normal,
         freed: false,
+        ragged: false,
     }];
     // (fork) entries below this one have let their lines go
     let mut freed_upto = 1;
@@ -623,55 +627,84 @@ fn linebreak_optimized_bounded<'a>(
                 active += 1;
             }
 
-            // Spacing contrast with the line above, between the shape's lines.
-            let gap = line_gap_log(p, metrics, &attempt, line_ratio, pred.class, width);
-            let fit = fitness(metrics, gap);
-            let contrast =
-                contrast_cost(metrics, shape, pred.class, pred.fit, pred.gap, gap);
-
-            // The total cost of this line and its chain of predecessors.
-            let total = pred.total + line_cost + contrast;
+            // (fork) The variants of this line: justified, and, for a paragraph
+            // shape's first line that stops far enough short of its measure (a word
+            // space, not a hyphen, and not the paragraph's end), ragged at natural
+            // spacing, at a badness of its own.
+            let measure = width - p.config.hang_at(pred.class);
+            let ragged_ok = shape > 0
+                && pred.class == 0
+                && pred_index == 0
+                && !p.config.hang_ragged.is_zero()
+                && breakpoint == Breakpoint::Normal
+                && attempt.justify
+                && line_ratio > 0.0
+                && measure - attempt.width >= p.config.hang_ragged;
+            let ragged_cost = Scalar::new(1.0 + metrics.ragged).powi(2).get();
 
             // If the line is already underfull (`line_ratio > 0`), any shorter
             // slice of the line will be even more underfull. So it'll only get
             // worse from here and further attempts would also have a cost
             // exceeding `bound`. There is one exception: When the line has
             // negative spacing, we can't know for sure, so we don't assign the
-            // lower bound in that case.
+            // lower bound in that case. (A ragged first line costs the same
+            // however short: a shape's first line has one predecessor, the
+            // paragraph's start, so no later attempt shares this bound.)
             if line_ratio > 0.0
                 && line_lower_bound[pred.class].is_none()
                 && !attempt.has_negative_width_items()
             {
-                line_lower_bound[pred.class] = Some(line_cost);
+                line_lower_bound[pred.class] =
+                    Some(if ragged_ok { line_cost.min(ragged_cost) } else { line_cost });
             }
 
-            // If the cost already exceeds the upper bound, we don't need to
-            // integrate this result into the table.
-            if total > upper_bound + BOUND_EPS {
-                continue;
-            }
+            for ragged in [false, true] {
+                if ragged && !ragged_ok {
+                    continue;
+                }
+                let (cost, ratio) =
+                    if ragged { (ragged_cost, 0.0) } else { (line_cost, line_ratio) };
 
-            // If this attempt is better than what we had before, take it!
-            let class = (pred.class + 1).min(shape);
-            let slot = fitness_slot(metrics, shape, class, fit);
-            let count = pred.count + 1;
-            let key = (if loose { count } else { 0 }, slot);
-            if best.get(&key).is_none_or(|best| best.total >= total) {
-                best.insert(
-                    key,
-                    Entry {
-                        pred: pred_index,
-                        total,
-                        line: attempt,
-                        end,
-                        class,
-                        fit,
-                        gap,
-                        count,
-                        bp: breakpoint,
-                        freed: false,
-                    },
+                // Spacing contrast with the line above, between the shape's lines.
+                let gap = line_gap_log_set(
+                    p, metrics, &attempt, ratio, pred.class, width, ragged,
                 );
+                let fit = fitness(metrics, gap);
+                let contrast =
+                    contrast_cost(metrics, shape, pred.class, pred.fit, pred.gap, gap);
+
+                // The total cost of this line and its chain of predecessors.
+                let total = pred.total + cost + contrast;
+
+                // If the cost already exceeds the upper bound, we don't need to
+                // integrate this result into the table.
+                if total > upper_bound + BOUND_EPS {
+                    continue;
+                }
+
+                // If this attempt is better than what we had before, take it!
+                let class = (pred.class + 1).min(shape);
+                let slot = fitness_slot(metrics, shape, class, fit);
+                let count = pred.count + 1;
+                let key = (if loose { count } else { 0 }, slot);
+                if best.get(&key).is_none_or(|best| best.total >= total) {
+                    best.insert(
+                        key,
+                        Entry {
+                            pred: pred_index,
+                            total,
+                            line: attempt.clone(),
+                            end,
+                            class,
+                            fit,
+                            gap,
+                            count,
+                            bp: breakpoint,
+                            freed: false,
+                            ragged,
+                        },
+                    );
+                }
             }
         }
 
@@ -760,7 +793,7 @@ fn linebreak_optimized_bounded<'a>(
             ))
             .ok()
         };
-        let attempt = kept.unwrap_or_else(|| {
+        let mut attempt = kept.unwrap_or_else(|| {
             let start = table[table[i].pred].end;
             line(
                 engine,
@@ -770,6 +803,9 @@ fn linebreak_optimized_bounded<'a>(
                 Some(lines.last().unwrap_or(&empty)),
             )
         });
+        if table[i].ragged {
+            attempt.justify = false;
+        }
         lines.push(attempt);
     }
     (lines, total, best_count, count)
@@ -1336,6 +1372,12 @@ fn raw_cost(
     Scalar::new(1.0 + badness + penalty).powi(2).get()
 }
 
+/// (fork) The badness of a ragged first shape line at `costs.ragged` 100%: about a
+/// line 4 % past its justification limits at `costs.overstretch` 1000% (Knuth–Plass
+/// badness 100·r³ of the overstretched ratio 1.44), so a justified first line within
+/// the limits is always cheaper, and one past them is traded for the ragged line.
+const RAGGED_BADNESS: f64 = 300.0;
+
 /// Spacing classes kept apart per breakpoint (13: −6 … 6).
 const FITNESS_SLOTS: usize = 13;
 /// The cost of one step of spacing contrast at `costs.contrast` 100%.
@@ -1377,13 +1419,26 @@ fn line_gap_log(
     index: usize,
     width: Abs,
 ) -> f64 {
+    line_gap_log_set(p, metrics, line, ratio, index, width, false)
+}
+
+/// (fork) As `line_gap_log`, of the line as set: `natural`, ragged at natural spacing.
+fn line_gap_log_set(
+    p: &Preparation,
+    metrics: &CostMetrics,
+    line: &Line,
+    ratio: f64,
+    index: usize,
+    width: Abs,
+    natural: bool,
+) -> f64 {
     if !metrics.exact_gap {
-        return gap_log(metrics, ratio);
+        return gap_log(metrics, if natural { 0.0 } else { ratio });
     }
     if metrics.contrast <= 0.0 || index >= p.config.hang.0 {
         return 0.0;
     }
-    printed_gaps(p, line, width, index, metrics.gap_unit).map_or(0.0, |g| g.0)
+    printed_gaps_set(p, line, width, index, metrics.gap_unit, natural).map_or(0.0, |g| g.0)
 }
 
 fn printed_gaps(
@@ -1393,9 +1448,25 @@ fn printed_gaps(
     index: usize,
     unit: Abs,
 ) -> Option<(f64, f64)> {
+    printed_gaps_set(p, line, width, index, unit, false)
+}
+
+fn printed_gaps_set(
+    p: &Preparation,
+    line: &Line,
+    width: Abs,
+    index: usize,
+    unit: Abs,
+    natural: bool,
+) -> Option<(f64, f64)> {
     let indent = p.config.hang_at(index);
-    let (_, _, ratio, extra) =
-        super::line::justification(p, line, width + p.config.hanging_indent, indent);
+    let (ratio, extra) = if natural {
+        (0.0, Abs::zero())
+    } else {
+        let (_, _, ratio, extra) =
+            super::line::justification(p, line, width + p.config.hanging_indent, indent);
+        (ratio, extra)
+    };
 
     let mut sum = Abs::zero();
     let mut count = 0;
@@ -1833,6 +1904,9 @@ struct CostMetrics {
     /// The cost of a step of spacing contrast between a paragraph shape's lines
     /// (zero: not costed).
     contrast: f64,
+    /// (fork) The badness of a paragraph shape's first line set ragged (where
+    /// `par.hang.ragged` allows it).
+    ragged: f64,
     /// Use printed gaps only in the bounded repair of a failing shape.
     exact_gap: bool,
     /// A common natural space for comparing mixed-style printed gaps.
@@ -1874,6 +1948,7 @@ impl CostMetrics {
             caps_factor: p.config.costs.capitalized().get().max(0.0),
             overstretch: p.config.costs.overstretch().get().max(0.0),
             contrast: CONTRAST_COST * p.config.costs.contrast().get().max(0.0),
+            ragged: RAGGED_BADNESS * p.config.costs.ragged().get().max(0.0),
             exact_gap: false,
             gap_unit: p
                 .items

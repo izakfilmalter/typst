@@ -442,6 +442,11 @@ pub struct ParElem {
     /// at the very start of the paragraph (the drop's anchor) stays at the
     /// nominal indent, so what it places does not move.
     ///
+    /// With `ragged`, the shape's first line may end ragged, at natural
+    /// spacing, where it then stops at least that far short of its measure:
+    /// the line breaker takes it (at `text.costs.ragged`) only where no
+    /// justified first line keeps the shape within its limits.
+    ///
     /// ```example
     /// #set par(justify: true, hang: (lines: 2, indent: 2em))
     /// #lorem(30)
@@ -476,6 +481,9 @@ pub struct ParHang {
     pub indent: Length,
     /// How far the indent may grow or shrink to break the lines better.
     pub flex: Length,
+    /// How far short of its measure the first line must stop to be set
+    /// ragged (zero: never ragged).
+    pub ragged: Length,
 }
 
 cast! {
@@ -486,6 +494,9 @@ cast! {
         if self.flex != Length::zero() {
             d.insert("flex".into(), self.flex.into_value());
         }
+        if self.ragged != Length::zero() {
+            d.insert("ragged".into(), self.ragged.into_value());
+        }
         Value::Dict(d)
     },
     _: crate::foundations::NoneValue => Self::default(),
@@ -493,8 +504,9 @@ cast! {
         let lines = dict.take("lines")?.cast::<usize>()?;
         let indent = dict.take("indent")?.cast::<Length>()?;
         let flex = dict.take("flex").ok().map(|v| v.cast::<Length>()).transpose()?.unwrap_or_default();
-        dict.finish(&["lines", "indent", "flex"])?;
-        Self { lines, indent, flex }
+        let ragged = dict.take("ragged").ok().map(|v| v.cast::<Length>()).transpose()?.unwrap_or_default();
+        dict.finish(&["lines", "indent", "flex", "ragged"])?;
+        Self { lines, indent, flex, ragged }
     },
 }
 

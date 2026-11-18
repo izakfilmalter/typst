@@ -587,6 +587,11 @@ pub struct TextElem {
     ///   (a proper name), as a share of the hyphenation cost: `{100%}`, the
     ///   default, costs it like any other word; `{2000%}` breaks a name only
     ///   where the paragraph has no other good break
+    /// - `ragged`: ending a paragraph shape's first line ragged, at natural
+    ///   spacing, where @par.hang allows it (`ragged`): `{100%}`, the default,
+    ///   costs it about as much as a line a little past its justification
+    ///   limits, so it is taken only where no justified first line is within
+    ///   them
     ///
     /// Hyphenation is generally avoided by placing the whole word on the next
     /// line, so a higher hyphenation cost can result in awkward justification
@@ -1547,6 +1552,7 @@ pub struct Costs {
     overstretch: Option<Ratio>,
     contrast: Option<Ratio>,
     capitalized: Option<Ratio>,
+    ragged: Option<Ratio>,
 }
 
 impl Costs {
@@ -1584,6 +1590,11 @@ impl Costs {
     pub fn capitalized(&self) -> Ratio {
         self.capitalized.unwrap_or(Ratio::one())
     }
+
+    #[must_use]
+    pub fn ragged(&self) -> Ratio {
+        self.ragged.unwrap_or(Ratio::one())
+    }
 }
 
 impl Fold for Costs {
@@ -1597,6 +1608,7 @@ impl Fold for Costs {
             overstretch: self.overstretch.or(outer.overstretch),
             contrast: self.contrast.or(outer.contrast),
             capitalized: self.capitalized.or(outer.capitalized),
+            ragged: self.ragged.or(outer.ragged),
         }
     }
 }
@@ -1611,6 +1623,7 @@ cast! {
         "overstretch" => self.overstretch(),
         "contrast" => self.contrast(),
         "capitalized" => self.capitalized(),
+        "ragged" => self.ragged(),
     ].into_value(),
     mut v: Dict => {
         let ret = Self {
@@ -1621,8 +1634,9 @@ cast! {
             overstretch: v.take("overstretch").ok().map(|v| v.cast()).transpose()?,
             contrast: v.take("contrast").ok().map(|v| v.cast()).transpose()?,
             capitalized: v.take("capitalized").ok().map(|v| v.cast()).transpose()?,
+            ragged: v.take("ragged").ok().map(|v| v.cast()).transpose()?,
         };
-        v.finish(&["hyphenation", "runt", "widow", "orphan", "overstretch", "contrast", "capitalized"])?;
+        v.finish(&["hyphenation", "runt", "widow", "orphan", "overstretch", "contrast", "capitalized", "ragged"])?;
         ret
     },
 }

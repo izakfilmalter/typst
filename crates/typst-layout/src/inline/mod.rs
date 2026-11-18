@@ -120,6 +120,7 @@ fn layout_par_impl(
                 (h.lines, h.indent.resolve(styles))
             },
             hang_flex: elem.hang.get(styles).flex.resolve(styles).max(Abs::zero()),
+            hang_ragged: elem.hang.get(styles).ragged.resolve(styles).max(Abs::zero()),
             looseness: elem.looseness.get(styles),
         },
     )
@@ -149,6 +150,7 @@ pub fn layout_inline<'a>(
             hanging_indent: shared.resolve(ParElem::hanging_indent),
             hang: (0, Abs::zero()),
             hang_flex: Abs::zero(),
+            hang_ragged: Abs::zero(),
             looseness: 0,
         },
     )
@@ -238,6 +240,15 @@ fn configuration(
         } else {
             Abs::zero()
         },
+        hang_ragged: if situation.is_some()
+            && base.hang.0 > 0
+            && !base.hang.1.is_zero()
+            && justify
+        {
+            base.hang_ragged
+        } else {
+            Abs::zero()
+        },
         hang_shift: std::cell::Cell::new(Abs::zero()),
         looseness: if situation.is_some() && justify { base.looseness } else { 0 },
         numbering_marker: shared.get_cloned(ParLine::numbering).map(|numbering| {
@@ -298,6 +309,7 @@ struct ConfigBase {
     hanging_indent: Abs,
     hang: (usize, Abs),
     hang_flex: Abs,
+    hang_ragged: Abs,
     looseness: i64,
 }
 
@@ -318,6 +330,9 @@ struct Config {
     hang: (usize, Abs),
     /// How far the shape's indent may grow or shrink (`par.hang.flex`).
     hang_flex: Abs,
+    /// How far short of its measure the shape's first line must stop to end
+    /// ragged (`par.hang.ragged`; zero: never).
+    hang_ragged: Abs,
     /// The shift of the shape's indent the line breaker chose within the flex
     /// (the drop's anchor box keeps the nominal indent).
     hang_shift: std::cell::Cell<Abs>,
