@@ -628,9 +628,9 @@ fn linebreak_optimized_bounded<'a>(
             }
 
             // (fork) The variants of this line: justified, and, for a paragraph
-            // shape's first line that stops far enough short of its measure (a word
-            // space, not a hyphen, and not the paragraph's end), ragged at natural
-            // spacing, at a badness of its own.
+            // shape's first line of text that stops far enough short of its measure
+            // (a word space, not a hyphen, and not the paragraph's end), ragged at
+            // natural spacing, at a badness of its own.
             let measure = width - p.config.hang_at(pred.class);
             let ragged_ok = shape > 0
                 && pred.class == 0
@@ -639,7 +639,12 @@ fn linebreak_optimized_bounded<'a>(
                 && breakpoint == Breakpoint::Normal
                 && attempt.justify
                 && line_ratio > 0.0
-                && measure - attempt.width >= p.config.hang_ragged;
+                && measure - attempt.width >= p.config.hang_ragged
+                // (a line of text, half its measure at least: the shape opens on a
+                // zero-width anchor box with a break after it, and an empty ragged
+                // first line would set the paragraph a line lower beside its drop)
+                && attempt.width >= measure * 0.5
+                && attempt.justifiables() > 0;
             let ragged_cost = Scalar::new(1.0 + metrics.ragged).powi(2).get();
 
             // If the line is already underfull (`line_ratio > 0`), any shorter
