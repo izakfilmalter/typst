@@ -244,7 +244,61 @@ fn linebreak_optimized<'a>(
     p: &'a Preparation<'a>,
     width: Abs,
 ) -> Vec<Line<'a>> {
-    let mut metrics = CostMetrics::compute(p);
+    let metrics = CostMetrics::compute(p);
+    let costed = metrics.overshrink > 1.0 || metrics.allow_ragged;
+    if !costed {
+        return linebreak_optimized_shape(engine, p, width, metrics);
+    }
+    // (fork) The paragraph-level retry: the paragraph is broken first without the
+    // costs that answer a line out of its limits (`costs.overshrink`, a ragged first
+    // shape line). Where those breaks leave such a line, it is broken again with
+    // them, and that layout is kept only with as many lines: an answer that sets the
+    // paragraph longer or shorter moves everything after it.
+    let plain_metrics =
+        CostMetrics { overshrink: 1.0, allow_ragged: false, ..metrics };
+    let plain = linebreak_optimized_shape(engine, p, width, plain_metrics);
+    if !wants_retry(p, width, &plain, &metrics) {
+        return plain;
+    }
+    let plain_shift = p.config.hang_shift.get();
+    let retry = linebreak_optimized_shape(engine, p, width, metrics);
+    if retry.len() == plain.len() {
+        retry
+    } else {
+        p.config.hang_shift.set(plain_shift);
+        plain
+    }
+}
+
+/// (fork) Whether a paragraph's plain breaks hold a line the retry's costs answer:
+/// a line shrunk past `shrink_floor` (with `costs.overshrink`), or a paragraph shape's
+/// line stretched past its limits (with a ragged first line allowed).
+fn wants_retry(p: &Preparation, width: Abs, lines: &[Line], metrics: &CostMetrics) -> bool {
+    lines.iter().enumerate().any(|(i, l)| {
+        if !l.justify {
+            return false;
+        }
+        let ratio = raw_ratio(
+            p,
+            width - p.config.hang_at(i),
+            l.width,
+            l.stretchability(),
+            l.shrinkability(),
+            l.justifiables(),
+        );
+        (metrics.overshrink > 1.0 && ratio < metrics.shrink_floor)
+            || (metrics.allow_ragged && i < p.config.hang.0 && ratio > 1.0)
+    })
+}
+
+/// Optimized line breaking with the given metrics: the shape's indent within its
+/// flex, and a failing shape repaired on exact gaps.
+fn linebreak_optimized_shape<'a>(
+    engine: &Engine,
+    p: &'a Preparation<'a>,
+    width: Abs,
+    mut metrics: CostMetrics,
+) -> Vec<Line<'a>> {
     let best = linebreak_optimized_with_metrics(engine, p, width, &metrics);
     if metrics.contrast <= 0.0 || p.config.hang.0 < 2 || !shape_is_ltr(p, &best) {
         return best;
@@ -636,6 +690,7 @@ fn linebreak_optimized_bounded<'a>(
                 && pred.class == 0
                 && pred_index == 0
                 && !p.config.hang_ragged.is_zero()
+                && metrics.allow_ragged
                 && breakpoint == Breakpoint::Normal
                 && attempt.justify
                 && line_ratio > 0.0
@@ -1909,6 +1964,7 @@ fn lang_at(p: &Preparation, offset: usize) -> Option<hypher::Lang> {
 }
 
 /// Resolved metrics relevant for cost computation.
+#[derive(Clone, Copy)]
 struct CostMetrics {
     min_ratio: f64,
     min_approx_ratio: f64,
@@ -1930,6 +1986,8 @@ struct CostMetrics {
     /// (fork) The badness of a paragraph shape's first line set ragged (where
     /// `par.hang.ragged` allows it).
     ragged: f64,
+    /// (fork) Whether a ragged first line is tried at all (`par.hang.ragged`).
+    allow_ragged: bool,
     /// Use printed gaps only in the bounded repair of a failing shape.
     exact_gap: bool,
     /// A common natural space for comparing mixed-style printed gaps.
@@ -1972,6 +2030,7 @@ impl CostMetrics {
             overstretch: p.config.costs.overstretch().get().max(0.0),
             contrast: CONTRAST_COST * p.config.costs.contrast().get().max(0.0),
             ragged: RAGGED_BADNESS * p.config.costs.ragged().get().max(0.0),
+            allow_ragged: p.config.hang.0 > 0 && !p.config.hang_ragged.is_zero(),
             overshrink: p.config.costs.overshrink().get().max(0.0),
             shrink_floor: {
                 let down = (1.0 - limits.spacing().min.rel.get()).max(0.0)
