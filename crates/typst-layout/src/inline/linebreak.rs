@@ -2030,7 +2030,9 @@ impl CostMetrics {
             overstretch: p.config.costs.overstretch().get().max(0.0),
             contrast: CONTRAST_COST * p.config.costs.contrast().get().max(0.0),
             ragged: RAGGED_BADNESS * p.config.costs.ragged().get().max(0.0),
-            allow_ragged: p.config.hang.0 > 0 && !p.config.hang_ragged.is_zero(),
+            allow_ragged: p.config.hang.0 > 0
+                && !p.config.hang_ragged.is_zero()
+                && p.config.costs.ragged().get() > 0.0,
             overshrink: p.config.costs.overshrink().get().max(0.0),
             shrink_floor: {
                 let down = (1.0 - limits.spacing().min.rel.get()).max(0.0)

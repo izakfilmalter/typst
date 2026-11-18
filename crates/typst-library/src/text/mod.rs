@@ -592,10 +592,10 @@ pub struct TextElem {
     ///   of the natural space: that shrink counts this many times (`{100%}`,
     ///   the default, costs it like any other shrink)
     /// - `ragged`: ending a paragraph shape's first line ragged, at natural
-    ///   spacing, where @par.hang allows it (`ragged`): `{100%}`, the default,
-    ///   costs it about as much as a line a little past its justification
-    ///   limits, so it is taken only where no justified first line is within
-    ///   them
+    ///   spacing, where @par.hang allows it (`ragged`): `{0%}`, the default,
+    ///   never sets it ragged; `{100%}` costs it about as much as a line a
+    ///   little past its justification limits, so it is taken only where no
+    ///   justified first line is within them
     ///
     /// Hyphenation is generally avoided by placing the whole word on the next
     /// line, so a higher hyphenation cost can result in awkward justification
@@ -1598,7 +1598,7 @@ impl Costs {
 
     #[must_use]
     pub fn ragged(&self) -> Ratio {
-        self.ragged.unwrap_or(Ratio::one())
+        self.ragged.unwrap_or(Ratio::zero())
     }
 
     #[must_use]

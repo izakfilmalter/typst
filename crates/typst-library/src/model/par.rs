@@ -444,8 +444,9 @@ pub struct ParElem {
     ///
     /// With `ragged`, the shape's first line may end ragged, at natural
     /// spacing, where it then stops at least that far short of its measure:
-    /// the line breaker takes it (at `text.costs.ragged`) only where no
-    /// justified first line keeps the shape within its limits.
+    /// the line breaker takes it (at `text.costs.ragged`, which must be more
+    /// than `{0%}`) only where no justified first line keeps the shape within
+    /// its limits.
     ///
     /// ```example
     /// #set par(justify: true, hang: (lines: 2, indent: 2em))
