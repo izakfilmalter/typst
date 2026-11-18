@@ -1315,14 +1315,21 @@ fn raw_cost(
     // Stretch past the justification limits (a ratio over 1) counts
     // `overstretch` times (clamped as in `raw_ratio`, so a loose line never
     // costs as much as an overfull one).
+    // (fork) Shrink past the printed-gap floor (`shrink_floor`) counts
+    // `overshrink` times, as stretch past the limits does (the overfull test
+    // reads the ratio as set).
+    let overfull = ratio < metrics.min_ratio(approx);
     let ratio = if ratio > 1.0 {
         (1.0 + metrics.overstretch * (ratio - 1.0)).min(10.0)
+    } else if ratio < metrics.shrink_floor {
+        (metrics.shrink_floor + metrics.overshrink * (ratio - metrics.shrink_floor))
+            .max(-10.0)
     } else {
         ratio
     };
 
     // Determine the stretch/shrink cost of the line.
-    let badness = if ratio < metrics.min_ratio(approx) {
+    let badness = if overfull {
         // Overfull line always has maximum cost.
         1_000_000.0
     } else if breakpoint != Breakpoint::Mandatory || justify || ratio < 0.0 {
@@ -1377,6 +1384,12 @@ fn raw_cost(
 /// badness 100·r³ of the overstretched ratio 1.44), so a justified first line within
 /// the limits is always cheaper, and one past them is traded for the ragged line.
 const RAGGED_BADNESS: f64 = 300.0;
+
+/// (fork) The printed word gap, as a share of the natural space, under which shrink
+/// counts `costs.overshrink` times: a little over the 0.65 of the median gap a reader
+/// sees as cramped (with −0.03 em letterspacing and spaces to 90 %, a fully shrunk
+/// line prints 0.60).
+const GAP_FLOOR: f64 = 0.66;
 
 /// Spacing classes kept apart per breakpoint (13: −6 … 6).
 const FITNESS_SLOTS: usize = 13;
@@ -1901,6 +1914,11 @@ struct CostMetrics {
     caps_factor: f64,
     /// How many times stretch past the justification limits counts.
     overstretch: f64,
+    /// (fork) How many times shrink past `shrink_floor` counts.
+    overshrink: f64,
+    /// (fork) The shrink ratio at which a line's printed word gap reaches
+    /// `GAP_FLOOR` of the natural space (−1 or less: the limits never get there).
+    shrink_floor: f64,
     /// The cost of a step of spacing contrast between a paragraph shape's lines
     /// (zero: not costed).
     contrast: f64,
@@ -1949,6 +1967,12 @@ impl CostMetrics {
             overstretch: p.config.costs.overstretch().get().max(0.0),
             contrast: CONTRAST_COST * p.config.costs.contrast().get().max(0.0),
             ragged: RAGGED_BADNESS * p.config.costs.ragged().get().max(0.0),
+            overshrink: p.config.costs.overshrink().get().max(0.0),
+            shrink_floor: {
+                let down = (1.0 - limits.spacing().min.rel.get()).max(0.0)
+                    + 2.0 * (-limits.tracking().min.at(size).to_raw()).max(0.0) / space;
+                if down > 1.0 - GAP_FLOOR { -(1.0 - GAP_FLOOR) / down } else { -1.0 }
+            },
             exact_gap: false,
             gap_unit: p
                 .items

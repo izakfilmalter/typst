@@ -587,6 +587,10 @@ pub struct TextElem {
     ///   (a proper name), as a share of the hyphenation cost: `{100%}`, the
     ///   default, costs it like any other word; `{2000%}` breaks a name only
     ///   where the paragraph has no other good break
+    /// - `overshrink`: shrinking a line so far that its printed word gap (the
+    ///   space and the letterspacing beside it) falls under about two thirds
+    ///   of the natural space: that shrink counts this many times (`{100%}`,
+    ///   the default, costs it like any other shrink)
     /// - `ragged`: ending a paragraph shape's first line ragged, at natural
     ///   spacing, where @par.hang allows it (`ragged`): `{100%}`, the default,
     ///   costs it about as much as a line a little past its justification
@@ -1553,6 +1557,7 @@ pub struct Costs {
     contrast: Option<Ratio>,
     capitalized: Option<Ratio>,
     ragged: Option<Ratio>,
+    overshrink: Option<Ratio>,
 }
 
 impl Costs {
@@ -1595,6 +1600,11 @@ impl Costs {
     pub fn ragged(&self) -> Ratio {
         self.ragged.unwrap_or(Ratio::one())
     }
+
+    #[must_use]
+    pub fn overshrink(&self) -> Ratio {
+        self.overshrink.unwrap_or(Ratio::one())
+    }
 }
 
 impl Fold for Costs {
@@ -1609,6 +1619,7 @@ impl Fold for Costs {
             contrast: self.contrast.or(outer.contrast),
             capitalized: self.capitalized.or(outer.capitalized),
             ragged: self.ragged.or(outer.ragged),
+            overshrink: self.overshrink.or(outer.overshrink),
         }
     }
 }
@@ -1624,6 +1635,7 @@ cast! {
         "contrast" => self.contrast(),
         "capitalized" => self.capitalized(),
         "ragged" => self.ragged(),
+        "overshrink" => self.overshrink(),
     ].into_value(),
     mut v: Dict => {
         let ret = Self {
@@ -1635,8 +1647,9 @@ cast! {
             contrast: v.take("contrast").ok().map(|v| v.cast()).transpose()?,
             capitalized: v.take("capitalized").ok().map(|v| v.cast()).transpose()?,
             ragged: v.take("ragged").ok().map(|v| v.cast()).transpose()?,
+            overshrink: v.take("overshrink").ok().map(|v| v.cast()).transpose()?,
         };
-        v.finish(&["hyphenation", "runt", "widow", "orphan", "overstretch", "contrast", "capitalized", "ragged"])?;
+        v.finish(&["hyphenation", "runt", "widow", "orphan", "overstretch", "contrast", "capitalized", "ragged", "overshrink"])?;
         ret
     },
 }
