@@ -1359,6 +1359,11 @@ fn raw_ratio(
     ratio.clamp(MIN_RATIO - 1.0, 10.0)
 }
 
+/// (fork) The cost of each unit of an overstretched ratio past the clamp at 10 (`raw_cost`; the
+/// excess capped at 160): at most 800 000 over the clamp's 100 000, under an overfull line's
+/// 1 000 000 (at `overstretch` 1000 % the excess reaches 81, 405 000).
+const PAST_CAP_COST: f64 = 5000.0;
+
 /// Compute the cost of a line given raw metrics.
 ///
 /// This mostly follows the formula in the Knuth-Plass paper, but there are some
@@ -1379,6 +1384,17 @@ fn raw_cost(
     // `overshrink` times, as stretch past the limits does (the overfull test
     // reads the ratio as set).
     let overfull = ratio < metrics.min_ratio(approx);
+    // (fork) How far an overstretched line passes the clamp at 10: past it every line cost
+    // the same, so a line stretched 70× (two words beside an unbreakable Greek word and its
+    // Strong's number, “This / strange”) tied with one at twice the limits, and the
+    // hyphenation, runt and contrast costs chose between them. The excess keeps the cost
+    // rising (`past_cap`, below), still under an overfull line's; a line under the clamp
+    // costs exactly what it did.
+    let past_cap = if ratio > 1.0 {
+        (1.0 + metrics.overstretch * (ratio - 1.0) - 10.0).clamp(0.0, 160.0)
+    } else {
+        0.0
+    };
     let ratio = if ratio > 1.0 {
         (1.0 + metrics.overstretch * (ratio - 1.0)).min(10.0)
     } else if ratio < metrics.shrink_floor {
@@ -1396,7 +1412,7 @@ fn raw_cost(
         // If the line shall be justified or needs shrinking, it has normal
         // badness with cost 100|ratio|^3. We limit the ratio to 10 as to not
         // get to close to our maximum cost.
-        100.0 * Scalar::new(ratio.abs()).powi(3).get()
+        100.0 * Scalar::new(ratio.abs()).powi(3).get() + PAST_CAP_COST * past_cap
     } else {
         // If the line shouldn't be justified and doesn't need shrink, we don't
         // pay any cost.
