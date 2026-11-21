@@ -596,6 +596,12 @@ pub struct TextElem {
     ///   never sets it ragged; `{100%}` costs it about as much as a line a
     ///   little past its justification limits, so it is taken only where no
     ///   justified first line is within them
+    /// - `unbreakable`: ending a line ragged, at natural spacing, where set
+    ///   justified it would stretch past its limits only because the next
+    ///   break opportunity is too far to join it (an unbreakable run: a name
+    ///   kept whole, a word with an attached number): `{0%}`, the default,
+    ///   never sets it ragged; `{100%}` costs it about as much as a line a
+    ///   little past its justification limits
     ///
     /// Hyphenation is generally avoided by placing the whole word on the next
     /// line, so a higher hyphenation cost can result in awkward justification
@@ -1558,6 +1564,7 @@ pub struct Costs {
     capitalized: Option<Ratio>,
     ragged: Option<Ratio>,
     overshrink: Option<Ratio>,
+    unbreakable: Option<Ratio>,
 }
 
 impl Costs {
@@ -1605,6 +1612,11 @@ impl Costs {
     pub fn overshrink(&self) -> Ratio {
         self.overshrink.unwrap_or(Ratio::one())
     }
+
+    #[must_use]
+    pub fn unbreakable(&self) -> Ratio {
+        self.unbreakable.unwrap_or(Ratio::zero())
+    }
 }
 
 impl Fold for Costs {
@@ -1620,6 +1632,7 @@ impl Fold for Costs {
             capitalized: self.capitalized.or(outer.capitalized),
             ragged: self.ragged.or(outer.ragged),
             overshrink: self.overshrink.or(outer.overshrink),
+            unbreakable: self.unbreakable.or(outer.unbreakable),
         }
     }
 }
@@ -1636,6 +1649,7 @@ cast! {
         "capitalized" => self.capitalized(),
         "ragged" => self.ragged(),
         "overshrink" => self.overshrink(),
+        "unbreakable" => self.unbreakable(),
     ].into_value(),
     mut v: Dict => {
         let ret = Self {
@@ -1648,8 +1662,9 @@ cast! {
             capitalized: v.take("capitalized").ok().map(|v| v.cast()).transpose()?,
             ragged: v.take("ragged").ok().map(|v| v.cast()).transpose()?,
             overshrink: v.take("overshrink").ok().map(|v| v.cast()).transpose()?,
+            unbreakable: v.take("unbreakable").ok().map(|v| v.cast()).transpose()?,
         };
-        v.finish(&["hyphenation", "runt", "widow", "orphan", "overstretch", "contrast", "capitalized", "ragged", "overshrink"])?;
+        v.finish(&["hyphenation", "runt", "widow", "orphan", "overstretch", "contrast", "capitalized", "ragged", "overshrink", "unbreakable"])?;
         ret
     },
 }
