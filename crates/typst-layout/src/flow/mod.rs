@@ -226,7 +226,26 @@ pub fn layout_flow<'a>(
 
     // This loop runs once per region produced by the flow layout.
     loop {
-        let frame = compose(engine, &mut work, &config, locator.next(&()), regions)?;
+        let region_locator = locator.next(&());
+        let before = work.clone();
+        let mut frame =
+            compose(engine, &mut work, &config, region_locator.relayout(), regions, false)?;
+
+        // A region that took nothing from the work, followed by a region just
+        // like it, would be laid out the same way again, forever: e.g. a line
+        // whose footnote entries leave too little room for the lines grouped
+        // with it by widow/orphan prevention moves on from the top of a column
+        // (as the entries, reserved for it, shrink the region, the next one
+        // always looks roomier), and meets the same situation in the next
+        // region. Then the region is laid out again with the content at the
+        // top of each column pinned there: it stays even if it doesn't fit
+        // (an orphan or widow, an entry continued or moved to the next page).
+        // A flow that makes progress never takes this path.
+        if work.stalled(&before) && regions.repeats() {
+            work = before;
+            frame =
+                compose(engine, &mut work, &config, region_locator.relayout(), regions, true)?;
+        }
         finished.push(frame);
 
         // Terminate the loop when everything is processed, though draining the
@@ -368,6 +387,24 @@ impl<'a, 'b> Work<'a, 'b> {
     }
 
     /// Whether all work is done. This means we can terminate flow layout.
+    /// Whether a region laid out from the `before` state took nothing from
+    /// the work, so that a region just like it would be laid out the same way.
+    /// (Leftovers of a breakable block may have shrunk: never stalled.)
+    fn stalled(&self, before: &Self) -> bool {
+        self.children.len() == before.children.len()
+            && self.spill.is_none()
+            && before.spill.is_none()
+            && self.floats.len() == before.floats.len()
+            && self.footnotes.len() == before.footnotes.len()
+            && self.footnote_spill.len() == before.footnote_spill.len()
+            && self
+                .footnote_spill
+                .iter()
+                .zip(&before.footnote_spill)
+                .all(|(a, b)| a.frames.len() == b.frames.len())
+            && self.skips.len() == before.skips.len()
+    }
+
     fn done(&self) -> bool {
         self.children.is_empty()
             && self.spill.is_none()

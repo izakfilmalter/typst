@@ -28,6 +28,7 @@ pub fn distribute(
         stickable: None,
         widow: None,
     };
+    distributor.composer.placed = false;
     let init = distributor.snapshot();
     let forced = match distributor.run() {
         Ok(()) => distributor.composer.work.done(),
@@ -316,7 +317,10 @@ impl<'a, 'b> Distributor<'a, 'b, '_, '_, '_> {
     fn line(&mut self, line: &'b LineChild) -> FlowResult<()> {
         // If the line doesn't fit and a followup region may improve things,
         // finish the region.
-        if !self.fits(line.frame.height()) && self.regions.may_progress() {
+        if !self.fits(line.frame.height())
+            && self.regions.may_progress()
+            && self.composer.may_migrate()
+        {
             return Err(Stop::Finish(false));
         }
 
@@ -325,6 +329,7 @@ impl<'a, 'b> Distributor<'a, 'b, '_, '_, '_> {
         // the current region, but does fit into the next region, finish the
         // region.
         if !self.fits(line.need)
+            && self.composer.may_migrate()
             && self
                 .regions
                 .iter()
@@ -351,7 +356,9 @@ impl<'a, 'b> Distributor<'a, 'b, '_, '_, '_> {
             // of its group placed before it moves with it (no widow or orphan
             // left behind).
             Err(Stop::Finish(forced)) => {
-                if let Some(snap) = self.widow.take() {
+                if let Some(snap) = self.widow.take()
+                    && self.composer.may_migrate()
+                {
                     self.restore(snap);
                 }
                 Err(Stop::Finish(forced))
@@ -385,7 +392,10 @@ impl<'a, 'b> Distributor<'a, 'b, '_, '_, '_> {
 
         // If the block doesn't fit and a followup region may improve things,
         // finish the region.
-        if !self.fits(frame.height()) && self.regions.may_progress() {
+        if !self.fits(frame.height())
+            && self.regions.may_progress()
+            && self.composer.may_migrate()
+        {
             return Err(Stop::Finish(false));
         }
 
@@ -413,6 +423,7 @@ impl<'a, 'b> Distributor<'a, 'b, '_, '_, '_> {
         if frame.is_empty()
             && spill.as_ref().is_some_and(|s| s.exist_non_empty_frame)
             && self.regions.may_progress()
+            && self.composer.may_migrate()
         {
             // If the first frame is empty, but there are non-empty frames in
             // the spill, the whole child should be put in the next region to
@@ -555,6 +566,9 @@ impl<'a, 'b> Distributor<'a, 'b, '_, '_, '_> {
         self.use_height(frame.height());
         self.used.x.set_max(frame.width());
         self.flush_tags();
+        if !frame.is_empty() {
+            self.composer.placed = true;
+        }
         self.items.push(Item::Frame(frame, align));
         Ok(())
     }

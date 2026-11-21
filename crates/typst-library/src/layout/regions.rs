@@ -110,6 +110,12 @@ impl Regions<'_> {
         !self.backlog.is_empty() || self.last.is_some_and(|height| self.size.y != height)
     }
 
+    /// Whether the next region, after calling `next()`, is just like this
+    /// one: there is no backlog, and the last region (if any) repeats it.
+    pub fn repeats(&self) -> bool {
+        self.backlog.is_empty() && self.last.is_none_or(|height| self.size.y == height)
+    }
+
     /// Advance to the next region if there is any.
     pub fn next(&mut self) {
         if let Some(height) = self

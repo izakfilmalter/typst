@@ -44,6 +44,7 @@ pub fn compose(
     config: &Config,
     locator: Locator,
     regions: Regions,
+    pinned: bool,
 ) -> SourceResult<Frame> {
     Composer {
         engine,
@@ -70,6 +71,8 @@ pub fn compose(
         flow_cap: None,
         flow_sum: Abs::zero(),
         cap_room: Abs::zero(),
+        pinned,
+        placed: false,
     }
     .page(locator, regions)
 }
@@ -148,6 +151,12 @@ pub struct Composer<'a, 'b, 'x, 'y> {
     /// Under a `flow_cap`: the room below the capped text that the current
     /// column's footnotes may still take (down to the foot).
     cap_room: Abs,
+    /// Whether in-flow content at the top of a column stays there instead of
+    /// moving on for lack of space (see [`Self::may_migrate`]).
+    pinned: bool,
+    /// Whether the distributor has placed in-flow content in the current
+    /// column. Set by the distributor, reset when it starts a column.
+    pub placed: bool,
 }
 
 /// How many column heights balancing tries upwards from its lower bound
@@ -1035,7 +1044,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         // line, in a breakable block) on right away, so that it is followed
         // by its entry. If that's impossible, queue the entry.
         if self.deferred.contains(&loc) {
-            if ctx.atomic && regions.may_progress() {
+            if ctx.atomic && regions.may_progress() && self.may_migrate() {
                 return Err(Stop::Finish(false));
             } else if self.may_cut(&ctx, loc, regions) {
                 return Err(Stop::Cut(flow_need, loc));
@@ -1048,6 +1057,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         let (x, width) = footnote_lane(self.config, lane, regions.size.x, elem.span())?;
 
         let may_cut = self.may_cut(&ctx, loc, regions);
+        let may_migrate = self.may_migrate();
 
         // Preserve entry order within each lane (and within the full-width
         // listing), without blocking unrelated lanes behind a long entry.
@@ -1132,7 +1142,7 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         // above the marker's line, so that line moves to the next region
         // together with the entry, just like an atomic frame would.
         if first.is_empty() && exist_non_empty_frame {
-            if migratable && regions.may_progress() {
+            if migratable && regions.may_progress() && may_migrate {
                 return Err(Stop::Finish(false));
             } else if may_cut {
                 return Err(Stop::Cut(flow_need, loc));
@@ -1240,6 +1250,15 @@ impl<'a, 'b> Composer<'a, 'b, '_, '_> {
         }
 
         Ok(())
+    }
+
+    /// Whether in-flow content may move on to the next region for lack of
+    /// space (or because its footnote entries don't fit).
+    ///
+    /// Always, unless the region is [pinned](layout_flow): then only once the
+    /// column holds in-flow content, which stays.
+    pub fn may_migrate(&self) -> bool {
+        !self.pinned || self.placed
     }
 
     /// Whether the breakable block containing the marker of footnote `loc` may
