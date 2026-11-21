@@ -602,6 +602,15 @@ fn linebreak_optimized_bounded<'a>(
     let mut prev_end = 0;
     let mut last_start = 0;
 
+    // (fork) The break opportunities in order, for a line's next one (`costs.unbreakable`).
+    let ends: Vec<usize> = if metrics.allow_unbreakable {
+        let mut v = Vec::new();
+        breakpoints(p, |e, _| v.push(e));
+        v
+    } else {
+        Vec::new()
+    };
+
     breakpoints(p, |end, breakpoint| {
         // Find the optimal predecessor (per class).
         // (keyed by slot, and by line count with a looseness)
@@ -702,6 +711,39 @@ fn linebreak_optimized_bounded<'a>(
                 && attempt.justifiables() > 0;
             let ragged_cost = Scalar::new(1.0 + metrics.ragged).powi(2).get();
 
+            // (fork, the owner's ruling 2026-11-21) Any line of a justified paragraph but
+            // its last may end ragged, at natural spacing, where set justified it stretches
+            // past its limits only because the next break opportunity is too far to join it:
+            // the line to that opportunity is overfull (an unbreakable run — a name kept
+            // whole, a Greek word with its Strong's number). Not a hyphen, not a mandatory
+            // break; the line stops at least about a module (1.25 em) short of its measure.
+            let unbreakable_ok = !ragged_ok
+                && metrics.allow_unbreakable
+                && breakpoint == Breakpoint::Normal
+                && attempt.justify
+                && line_ratio > 1.0
+                && measure - attempt.width >= p.config.font_size * 1.25
+                && attempt.justifiables() > 0
+                && {
+                    let i = ends.partition_point(|&e| e <= end);
+                    ends.get(i).is_some_and(|&next| {
+                        let joined = line(engine, p, start..next, Breakpoint::Normal, Some(&*pred.line));
+                        let (r, _) = ratio_and_cost(
+                            p,
+                            metrics,
+                            width - p.config.hang_at(pred.class),
+                            &pred.line,
+                            &joined,
+                            Breakpoint::Normal,
+                            unbreakable,
+                        );
+                        r < metrics.min_ratio
+                    })
+                };
+            let unbreakable_cost = Scalar::new(1.0 + metrics.unbreakable).powi(2).get();
+            let (ragged_ok, ragged_cost) =
+                if unbreakable_ok { (true, unbreakable_cost) } else { (ragged_ok, ragged_cost) };
+
             // If the line is already underfull (`line_ratio > 0`), any shorter
             // slice of the line will be even more underfull. So it'll only get
             // worse from here and further attempts would also have a cost
@@ -714,8 +756,11 @@ fn linebreak_optimized_bounded<'a>(
                 && line_lower_bound[pred.class].is_none()
                 && !attempt.has_negative_width_items()
             {
-                line_lower_bound[pred.class] =
-                    Some(if ragged_ok { line_cost.min(ragged_cost) } else { line_cost });
+                line_lower_bound[pred.class] = Some(if ragged_ok || metrics.allow_unbreakable {
+                    line_cost.min(ragged_cost).min(Scalar::new(1.0 + metrics.unbreakable).powi(2).get())
+                } else {
+                    line_cost
+                });
             }
 
             for ragged in [false, true] {
@@ -2004,6 +2049,10 @@ struct CostMetrics {
     ragged: f64,
     /// (fork) Whether a ragged first line is tried at all (`par.hang.ragged`).
     allow_ragged: bool,
+    /// (fork) The badness of a line set ragged because the next break opportunity is too
+    /// far to join it (`costs.unbreakable`), and whether that is tried at all.
+    unbreakable: f64,
+    allow_unbreakable: bool,
     /// Use printed gaps only in the bounded repair of a failing shape.
     exact_gap: bool,
     /// A common natural space for comparing mixed-style printed gaps.
@@ -2050,6 +2099,8 @@ impl CostMetrics {
                 && !p.config.hang_ragged.is_zero()
                 && p.config.costs.ragged().get() > 0.0,
             overshrink: p.config.costs.overshrink().get().max(0.0),
+            unbreakable: RAGGED_BADNESS * p.config.costs.unbreakable().get().max(0.0),
+            allow_unbreakable: p.config.justify && p.config.costs.unbreakable().get() > 0.0,
             shrink_floor: {
                 let down = (1.0 - limits.spacing().min.rel.get()).max(0.0)
                     + 2.0 * (-limits.tracking().min.at(size).to_raw()).max(0.0) / space;
