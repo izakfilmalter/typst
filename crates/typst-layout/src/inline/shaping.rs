@@ -70,6 +70,10 @@ pub struct Glyphs<'a> {
     inner: Cow<'a, [ShapedGlyph]>,
     /// The range of untrimmed glyphs.
     kept: Range,
+    /// (fork) The last kept glyph counts as having no adjustability, as if
+    /// `to_mut().last_mut().adjustability` were reset, without cloning borrowed glyphs
+    /// (`flatten_last`). Applied for real by `to_mut` and `trim`.
+    flat_last: bool,
 }
 
 impl<'a> Glyphs<'a> {
@@ -80,6 +84,7 @@ impl<'a> Glyphs<'a> {
         Self {
             inner: Cow::Borrowed(glyphs),
             kept: 0..glyphs.len(),
+            flat_last: false,
         }
     }
 
@@ -88,7 +93,7 @@ impl<'a> Glyphs<'a> {
     /// This happens after initial shaping.
     pub fn from_vec(glyphs: Vec<ShapedGlyph>) -> Self {
         let len = glyphs.len();
-        Self { inner: Cow::Owned(glyphs), kept: 0..len }
+        Self { inner: Cow::Owned(glyphs), kept: 0..len, flat_last: false }
     }
 
     /// Clone the internal glyph data to make it modifiable. Should be avoided
@@ -96,7 +101,36 @@ impl<'a> Glyphs<'a> {
     /// (benchmarks have shown ~10% slowdown on a text-heavy document if no
     /// borrowing is used).
     pub fn to_mut(&mut self) -> &mut [ShapedGlyph] {
+        if self.flat_last {
+            self.flat_last = false;
+            let last = self.kept.end - 1;
+            self.inner.to_mut()[last].adjustability = Adjustability::default();
+        }
         &mut self.inner.to_mut()[self.kept.clone()]
+    }
+
+    /// (fork) Count the last kept glyph as having no adjustability: what
+    /// `to_mut().last_mut()` with its adjustability reset gives, without cloning
+    /// borrowed glyphs. Only for a glyph that no CJK rule reads by its adjustability
+    /// (`flat_last_ok`); false when there is no kept glyph or it is not such a glyph.
+    pub fn flatten_last(&mut self) -> bool {
+        match self.last() {
+            Some(g) if flat_last_ok(g) => {
+                self.flat_last = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// (fork) The adjustability of the `i`th of all glyphs, as the glyphs would have it
+    /// with `flatten_last` applied.
+    fn adjustability_at(&self, i: usize) -> Adjustability {
+        if self.flat_last && i + 1 == self.kept.end {
+            Adjustability::default()
+        } else {
+            self.inner[i].adjustability
+        }
     }
 
     /// Trims glyphs that satisfy the given condition from the start and end.
@@ -104,6 +138,9 @@ impl<'a> Glyphs<'a> {
     /// Those glyphs will not be visible during normal operation anymore, only
     /// through [`all`](Self::all).
     pub fn trim(&mut self, f: impl FnMut(&ShapedGlyph) -> bool + Copy) {
+        if self.flat_last {
+            self.to_mut();
+        }
         let (start, end) = self.inner.split_prefix_suffix(f);
         self.kept = start..end;
     }
@@ -126,6 +163,13 @@ impl Deref for Glyphs<'_> {
     fn deref(&self) -> &Self::Target {
         &self.inner[self.kept.clone()]
     }
+}
+
+/// (fork) Whether `Glyphs::flatten_last` may stand for resetting this glyph's
+/// adjustability: the CJK punctuation rules read a glyph's stretchability (curly
+/// quotation marks among them), so only a glyph none of them can match.
+fn flat_last_ok(g: &ShapedGlyph) -> bool {
+    (g.c.is_ascii() || g.is_letter_or_number()) && !matches!(g.c, '‘' | '’' | '“' | '”')
 }
 
 /// A single glyph resulting from shaping.
@@ -168,7 +212,7 @@ pub struct ShapedGlyph {
     pub script: Script,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct Adjustability {
     /// The left and right stretchability
     pub stretchability: (Em, Em),
@@ -367,15 +411,16 @@ impl<'a> ShapedText<'a> {
                     let kept = self.glyphs.kept.contains(&i);
 
                     let (x_advance, x_offset) = if kept {
+                        let adj = self.glyphs.adjustability_at(i);
                         let adjustability_left = if justification_ratio < 0.0 {
-                            shaped.shrinkability().0
+                            adj.shrinkability.0
                         } else {
-                            shaped.stretchability().0
+                            adj.stretchability.0
                         };
                         let adjustability_right = if justification_ratio < 0.0 {
-                            shaped.shrinkability().1
+                            adj.shrinkability.1
                         } else {
-                            shaped.stretchability().1
+                            adj.stretchability.1
                         };
 
                         let justification_left = adjustability_left * justification_ratio;
@@ -526,17 +571,27 @@ impl<'a> ShapedText<'a> {
 
     /// The stretchability of the text.
     pub fn stretchability(&self) -> Abs {
+        let start = self.glyphs.kept.start;
         self.glyphs
             .iter()
-            .map(|g| (g.stretchability().0 + g.stretchability().1).at(g.size))
+            .enumerate()
+            .map(|(j, g)| {
+                let a = self.glyphs.adjustability_at(start + j);
+                (a.stretchability.0 + a.stretchability.1).at(g.size)
+            })
             .sum()
     }
 
     /// The shrinkability of the text
     pub fn shrinkability(&self) -> Abs {
+        let start = self.glyphs.kept.start;
         self.glyphs
             .iter()
-            .map(|g| (g.shrinkability().0 + g.shrinkability().1).at(g.size))
+            .enumerate()
+            .map(|(j, g)| {
+                let a = self.glyphs.adjustability_at(start + j);
+                (a.shrinkability.0 + a.shrinkability.1).at(g.size)
+            })
             .sum()
     }
 

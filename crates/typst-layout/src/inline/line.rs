@@ -351,6 +351,11 @@ fn adjust_glyph_stretch_at_line_end(p: &Preparation, items: &mut Items) {
     // it is good enough for now. The adjustability handling in general needs a
     // cleanup.
     let Some(shaped) = items.trailing_text_mut() else { return };
+    // (fork) without cloning the line's borrowed glyphs for one glyph's adjustability
+    // (it was every candidate line's clone and drop: ~10 % of a text-heavy unit)
+    if shaped.glyphs.flatten_last() {
+        return;
+    }
     let Some(glyph) = shaped.glyphs.to_mut().last_mut() else { return };
     glyph.adjustability = Adjustability::default();
 }
