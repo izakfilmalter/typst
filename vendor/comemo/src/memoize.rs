@@ -1,5 +1,5 @@
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use parking_lot::RwLock;
 use siphasher::sip128::{Hasher128, SipHasher13};
@@ -24,6 +24,9 @@ pub struct CacheStats {
     pub nodes: usize,
     pub hits: usize,
     pub misses: usize,
+    /// (fork) microseconds spent computing the misses since the last `stats` (inclusive:
+    /// the memoized calls inside them count too)
+    pub miss_us: u64,
     /// why lookups missed (with `set_explain`), most frequent first
     pub why: Vec<(String, usize)>,
 }
@@ -115,6 +118,7 @@ where
 
     // Execute the function with the constraint attached (with `nesting`, in a frame
     // that collects the memoized results it is made of).
+    let started = std::time::Instant::now();
     let (output, children) = if nesting {
         let frame = Frame::default();
         let saved = FRAME.with(|f| f.replace(Some(frame.clone())));
@@ -126,8 +130,16 @@ where
         (func(input), Vec::new())
     };
 
+    // (fork) what the result cost to compute: its life in the cache (`set_cost_keep`)
+    let cost_us = started.elapsed().as_micros().min(u64::MAX as u128) as u64;
+    cache.4.fetch_add(cost_us, Ordering::Relaxed);
+    let bonus = match COST_KEEP_US.load(Ordering::Relaxed) {
+        0 => 0,
+        per => (cost_us / per).min(1 << 20) as usize,
+    };
+
     // Insert the result into the cache.
-    let inserted = cache.0.write().insert(key, constraint, output.clone(), children);
+    let inserted = cache.0.write().insert(key, constraint, output.clone(), children, bonus);
     match inserted {
         Ok(leaf) => {
             if nesting {
@@ -186,6 +198,21 @@ pub fn evict_with(default: usize, policy: &dyn Fn(&str) -> usize) {
     accelerate::evict();
 }
 
+/// (fork) Microseconds of computation that buy a memoized result one more eviction of
+/// life (0: off, every result ages alike). An eviction drops a result only once its age
+/// passes `max_age` plus its cost over this: a result that took C µs to compute stays
+/// C / `per` evictions longer (with evictions every T µs, `per = T / k` keeps a result
+/// unused for k times what it cost to make). So a result that is expensive to make again outlives a trim made for the many cheap
+/// ones (a book-wide index rebuilt on every page once the trim let it go: the Diatessaron's
+/// `echo-cross()`, ~1.3 s a time). Eviction never changes an output, only what is reused.
+static COST_KEEP_US: AtomicU64 = AtomicU64::new(0);
+
+/// (fork) Set the cost that buys a result one more eviction of life (see `COST_KEEP_US`;
+/// 0 turns it off). Results inserted from now on take it.
+pub fn set_cost_keep(us_per_eviction: u64) {
+    COST_KEEP_US.store(us_per_eviction, Ordering::Relaxed);
+}
+
 /// (fork) Statistics of every named cache.
 pub fn stats() -> Vec<(&'static str, CacheStats)> {
     NAMED.read().iter().map(|(name, _, stats)| (*name, stats())).collect()
@@ -208,6 +235,7 @@ pub struct Cache<C, Out>(
     AtomicUsize,
     AtomicUsize,
     LazyLock<parking_lot::Mutex<std::collections::HashMap<String, usize>>>,
+    AtomicU64,
 );
 
 /// (fork) Record why lookups miss (`set_explain`).
@@ -226,7 +254,7 @@ impl<C: 'static, Out: 'static> Cache<C, Out> {
     /// pointer cannot be passed as an argument otherwise the function
     /// passed to `Lazy::new` is a closure and not a function pointer.
     pub const fn new(init: fn() -> RwLock<CacheData<C, Out>>) -> Self {
-        Self(LazyLock::new(init), AtomicUsize::new(0), AtomicUsize::new(0), LazyLock::new(Default::default))
+        Self(LazyLock::new(init), AtomicUsize::new(0), AtomicUsize::new(0), LazyLock::new(Default::default), AtomicU64::new(0))
     }
 
     /// Evict all entries whose age is larger than or equal to `max_age`.
@@ -243,6 +271,7 @@ impl<C: 'static, Out: 'static> Cache<C, Out> {
             nodes,
             hits: self.1.swap(0, Ordering::Relaxed),
             misses: self.2.swap(0, Ordering::Relaxed),
+            miss_us: self.4.swap(0, Ordering::Relaxed),
             why: {
                 let mut v: Vec<(String, usize)> = self.3.lock().drain().collect();
                 v.sort_by(|a, b| b.1.cmp(&a.1));
@@ -270,6 +299,8 @@ struct CacheEntry<C, Out> {
     children: Vec<Child>,
     /// (fork) the eviction epoch in which it was last touched
     stamp: AtomicUsize,
+    /// (fork) evictions of life beyond `max_age` its cost bought (`set_cost_keep`)
+    bonus: usize,
 }
 
 impl<C, Out: 'static> CacheData<C, Out> {
@@ -278,7 +309,8 @@ impl<C, Out: 'static> CacheData<C, Out> {
         self.tree.retain(|entry| {
             let age = entry.age.get_mut();
             *age += 1;
-            *age <= max_age
+            // (max_age 0 still clears the cache whole)
+            *age <= max_age || (max_age > 0 && *age <= max_age.saturating_add(entry.bonus))
         });
     }
 
@@ -300,6 +332,7 @@ impl<C, Out: 'static> CacheData<C, Out> {
         constraint: &Constraint<C>,
         output: Out,
         children: Vec<Child>,
+        bonus: usize,
     ) -> Result<usize, InsertError>
     where
         C: Call,
@@ -308,7 +341,7 @@ impl<C, Out: 'static> CacheData<C, Out> {
         self.tree.insert(
             key,
             immutable,
-            CacheEntry { output, mutable, age: AtomicUsize::new(0), children, stamp: AtomicUsize::new(0) },
+            CacheEntry { output, mutable, age: AtomicUsize::new(0), children, stamp: AtomicUsize::new(0), bonus },
         )
     }
 }

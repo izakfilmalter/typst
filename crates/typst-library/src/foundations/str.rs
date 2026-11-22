@@ -1017,7 +1017,24 @@ pub struct Regex(regex::Regex);
 impl Regex {
     /// Create a new regular expression.
     pub fn new(re: &str) -> StrResult<Self> {
-        regex::Regex::new(re).map(Self).map_err(|err| eco_format!("{err}"))
+        // (fork) A template that calls `regex("…")` inside a function compiles the same
+        // pattern on every call: a process-wide map from pattern to compiled regex (a clone
+        // shares the compiled program). Same pattern, same regex: outputs are unchanged.
+        // Bounded: past `REGEX_CACHE_MAX` patterns it starts again empty.
+        const REGEX_CACHE_MAX: usize = 4096;
+        static CACHE: std::sync::LazyLock<
+            std::sync::RwLock<rustc_hash::FxHashMap<Box<str>, regex::Regex>>,
+        > = std::sync::LazyLock::new(Default::default);
+        if let Some(r) = CACHE.read().unwrap_or_else(|e| e.into_inner()).get(re) {
+            return Ok(Self(r.clone()));
+        }
+        let r = regex::Regex::new(re).map_err(|err| eco_format!("{err}"))?;
+        let mut map = CACHE.write().unwrap_or_else(|e| e.into_inner());
+        if map.len() >= REGEX_CACHE_MAX {
+            map.clear();
+        }
+        map.insert(re.into(), r.clone());
+        Ok(Self(r))
     }
 }
 

@@ -439,7 +439,7 @@ mod tests {
                 Op::IgnoreInsertErrors => ignore_insert_errors = true,
                 Op::Insert(key, seq, value) => {
                     match tree.insert(key, seq.iter().cloned().collect(), value.clone()) {
-                        Ok(()) => kept.push((
+                        Ok(_) => kept.push((
                             key,
                             seq.iter().map(|(k, v)| (k.clone(), *v)).collect(),
                             value.clone(),

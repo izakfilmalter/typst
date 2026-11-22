@@ -143,6 +143,41 @@ fn test_evict() {
     test!(hit: null(), 0);
 }
 
+/// (fork) A result that was expensive to compute outlives the eviction age by its cost
+/// (`set_cost_keep`); a cheap one does not; `evict(0)` still clears everything.
+#[test]
+#[serial]
+fn test_evict_cost_keep() {
+    #[memoize]
+    fn slow(x: u8) -> u8 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        x
+    }
+    #[memoize]
+    fn cheap(x: u8) -> u8 {
+        x
+    }
+
+    evict(0);
+    // 5 ms of computing buys one eviction: ~20 ms buys ~4
+    comemo::set_cost_keep(5_000);
+    test!(miss: slow(1), 1);
+    test!(miss: cheap(1), 1);
+    for _ in 0..3 {
+        evict(1);
+    }
+    test!(hit: slow(1), 1);
+    test!(miss: cheap(1), 1);
+    for _ in 0..40 {
+        evict(1);
+    }
+    test!(miss: slow(1), 1);
+    evict(0);
+    test!(miss: slow(1), 1);
+    comemo::set_cost_keep(0);
+    evict(0);
+}
+
 /// Test tracking a trait object.
 #[test]
 #[serial]

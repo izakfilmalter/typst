@@ -89,7 +89,29 @@ pub fn is_enabled() -> bool {
 #[inline]
 pub fn clear() {
     EVENTS.lock().clear();
+    #[cfg(not(target_arch = "wasm32"))]
+    agg::clear();
 }
+
+/// (fork) Enable the timer in aggregate mode: instead of keeping every event (a layout
+/// of a long unit records hundreds of millions: gigabytes), each thread sums its scopes
+/// by (name, span) into a count, an inclusive and a self time. `export_json` then writes
+/// one entry per (name, file, line), the most self time first:
+/// `[{"name", "file", "line", "count", "incl_ms", "self_ms"}]`. Recursion counts a
+/// scope's inclusive time once, at its outermost frame. Not on wasm.
+pub fn enable_aggregate() {
+    AGGREGATE.store(true, Ordering::Relaxed);
+    enable();
+}
+
+/// (fork) Whether the timer is in aggregate mode.
+#[inline]
+pub fn is_aggregate() -> bool {
+    AGGREGATE.load(Ordering::Relaxed)
+}
+
+/// (fork) Aggregate mode (see `enable_aggregate`).
+static AGGREGATE: AtomicBool = AtomicBool::new(false);
 
 /// Export data as JSON for Chrome's tracing tool.
 ///
@@ -117,6 +139,11 @@ pub fn export_json<W: Write>(
     struct Args {
         file: String,
         line: u32,
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    if is_aggregate() {
+        return agg::export(writer, source);
     }
 
     // We take out the events to avoid a potential deadlock if `source` happens
@@ -154,6 +181,8 @@ pub struct TimingScope {
     name: &'static str,
     span: Option<NonZeroU64>,
     thread_id: u64,
+    /// (fork) recorded in aggregate mode
+    agg: bool,
 }
 
 impl TimingScope {
@@ -178,6 +207,11 @@ impl TimingScope {
 
     /// Create a new scope without checking if timing is enabled.
     fn new_impl(name: &'static str, span: Option<NonZeroU64>) -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        if is_aggregate() {
+            agg::start(name, span);
+            return Self { name, span, thread_id: 0, agg: true };
+        }
         let (thread_id, timestamp) =
             THREAD_DATA.with(|data| (data.id, Timestamp::now_with(data)));
         EVENTS.lock().push(Event {
@@ -187,12 +221,17 @@ impl TimingScope {
             span,
             thread_id,
         });
-        Self { name, span, thread_id }
+        Self { name, span, thread_id, agg: false }
     }
 }
 
 impl Drop for TimingScope {
     fn drop(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.agg {
+            agg::end();
+            return;
+        }
         let timestamp = Timestamp::now();
         EVENTS.lock().push(Event {
             kind: EventKind::End,
@@ -316,5 +355,140 @@ impl WasmTimer {
 
     fn now(&self) -> f64 {
         self.time_origin + self.perf.now()
+    }
+}
+
+/// (fork) Aggregate mode: per-thread sums by (name, span).
+#[cfg(not(target_arch = "wasm32"))]
+mod agg {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::io::Write;
+    use std::num::NonZeroU64;
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    use parking_lot::Mutex;
+    use serde::Serialize;
+
+    type Key = (&'static str, Option<NonZeroU64>);
+
+    #[derive(Default, Clone, Copy)]
+    struct Stat {
+        count: u64,
+        incl_ns: u64,
+        self_ns: u64,
+    }
+
+    type Sums = Arc<Mutex<HashMap<Key, Stat>>>;
+
+    /// Every thread's sums (a thread locks only its own while it records).
+    static REGISTRY: Mutex<Vec<Sums>> = Mutex::new(Vec::new());
+
+    struct Frame {
+        key: Key,
+        start: Instant,
+        child_ns: u64,
+    }
+
+    struct Local {
+        stack: Vec<Frame>,
+        /// how many frames of each key are open (recursion: inclusive time once)
+        open: HashMap<Key, u32>,
+        sums: Sums,
+    }
+
+    thread_local! {
+        static LOCAL: RefCell<Local> = RefCell::new({
+            let sums: Sums = Default::default();
+            REGISTRY.lock().push(sums.clone());
+            Local { stack: Vec::new(), open: HashMap::new(), sums }
+        });
+    }
+
+    pub fn start(name: &'static str, span: Option<NonZeroU64>) {
+        let key = (name, span);
+        LOCAL.with(|l| {
+            let mut l = l.borrow_mut();
+            *l.open.entry(key).or_insert(0) += 1;
+            l.stack.push(Frame { key, start: Instant::now(), child_ns: 0 });
+        });
+    }
+
+    pub fn end() {
+        LOCAL.with(|l| {
+            let mut l = l.borrow_mut();
+            let Some(f) = l.stack.pop() else { return };
+            let d = f.start.elapsed().as_nanos() as u64;
+            let outer = match l.open.get_mut(&f.key) {
+                Some(n) => {
+                    *n -= 1;
+                    *n == 0
+                }
+                None => true,
+            };
+            if let Some(p) = l.stack.last_mut() {
+                p.child_ns += d;
+            }
+            let mut sums = l.sums.lock();
+            let s = sums.entry(f.key).or_default();
+            s.count += 1;
+            s.self_ns += d.saturating_sub(f.child_ns);
+            if outer {
+                s.incl_ns += d;
+            }
+        });
+    }
+
+    pub fn clear() {
+        for s in REGISTRY.lock().iter() {
+            s.lock().clear();
+        }
+    }
+
+    pub fn export<W: Write>(
+        writer: W,
+        mut source: impl FnMut(NonZeroU64) -> (String, u32),
+    ) -> Result<(), String> {
+        #[derive(Serialize)]
+        struct Entry {
+            name: &'static str,
+            file: String,
+            line: u32,
+            count: u64,
+            incl_ms: f64,
+            self_ms: f64,
+        }
+        // (taken out first: `source` may run timed code)
+        let mut all: HashMap<Key, Stat> = HashMap::new();
+        for s in REGISTRY.lock().iter() {
+            for (k, v) in std::mem::take(&mut *s.lock()) {
+                let e = all.entry(k).or_default();
+                e.count += v.count;
+                e.incl_ns += v.incl_ns;
+                e.self_ns += v.self_ns;
+            }
+        }
+        let mut by_line: HashMap<(&'static str, String, u32), Stat> = HashMap::new();
+        for ((name, span), v) in all {
+            let (file, line) = span.map(&mut source).unwrap_or_default();
+            let e = by_line.entry((name, file, line)).or_default();
+            e.count += v.count;
+            e.incl_ns += v.incl_ns;
+            e.self_ns += v.self_ns;
+        }
+        let mut out: Vec<Entry> = by_line
+            .into_iter()
+            .map(|((name, file, line), v)| Entry {
+                name,
+                file,
+                line,
+                count: v.count,
+                incl_ms: v.incl_ns as f64 / 1e6,
+                self_ms: v.self_ns as f64 / 1e6,
+            })
+            .collect();
+        out.sort_by(|a, b| b.self_ms.total_cmp(&a.self_ms));
+        serde_json::to_writer(writer, &out).map_err(|e| format!("failed to write timings: {e}"))
     }
 }
