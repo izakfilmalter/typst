@@ -138,8 +138,23 @@ where
         per => (cost_us / per).min(1 << 20) as usize,
     };
 
-    // Insert the result into the cache.
-    let inserted = cache.0.write().insert(key, constraint, output.clone(), children, bonus);
+    // Insert the result into the cache. (fork, `set_admission`: a result whose key no
+    // stored result has and that was not computed in the last few evictions is not stored,
+    // only its key remembered: most results of a layout are never asked for again, and
+    // storing them, their call trees and their eviction cost time and memory.)
+    let mut data = cache.0.write();
+    let admit_age = ADMIT_AGE.load(Ordering::Relaxed);
+    if admit_age > 0 && !data.tree.has_key(key) && data.ghost.insert(key, 0).is_none() {
+        drop(data);
+        #[cfg(feature = "testing")]
+        crate::testing::register_miss();
+        return output;
+    }
+    if admit_age > 0 {
+        data.ghost.remove(&key);
+    }
+    let inserted = data.insert(key, constraint, output.clone(), children, bonus);
+    drop(data);
     match inserted {
         Ok(leaf) => {
             if nesting {
@@ -206,6 +221,16 @@ pub fn evict_with(default: usize, policy: &dyn Fn(&str) -> usize) {
 /// ones (a book-wide index rebuilt on every page once the trim let it go: the Diatessaron's
 /// `echo-cross()`, ~1.3 s a time). Eviction never changes an output, only what is reused.
 static COST_KEEP_US: AtomicU64 = AtomicU64::new(0);
+
+/// (fork) Admission (0: off, every result is stored). With `age` > 0 a result is stored
+/// only when its key is already in the cache or was computed within the last `age`
+/// evictions; the first time, only the key is remembered. Never changes an output.
+static ADMIT_AGE: AtomicUsize = AtomicUsize::new(0);
+
+/// (fork) Turn admission on (`age` evictions of memory for a computed key) or off (0).
+pub fn set_admission(age: usize) {
+    ADMIT_AGE.store(age, Ordering::Relaxed);
+}
 
 /// (fork) Set the cost that buys a result one more eviction of life (see `COST_KEEP_US`;
 /// 0 turns it off). Results inserted from now on take it.
@@ -285,6 +310,8 @@ impl<C: 'static, Out: 'static> Cache<C, Out> {
 pub struct CacheData<C, Out> {
     /// Maps from hashes to memoized results.
     tree: CallTree<C, CacheEntry<C, Out>>,
+    /// (fork, `set_admission`) keys computed but not stored, with their age in evictions
+    ghost: rustc_hash::FxHashMap<u128, usize>,
 }
 
 /// A memoized result.
@@ -306,6 +333,15 @@ struct CacheEntry<C, Out> {
 impl<C, Out: 'static> CacheData<C, Out> {
     /// Evict all entries whose age is larger than or equal to `max_age`.
     fn evict(&mut self, max_age: usize) {
+        let admit_age = ADMIT_AGE.load(Ordering::Relaxed);
+        if max_age == 0 || admit_age == 0 {
+            self.ghost.clear();
+        } else if !self.ghost.is_empty() {
+            self.ghost.retain(|_, age| {
+                *age += 1;
+                *age <= admit_age
+            });
+        }
         self.tree.retain(|entry| {
             let age = entry.age.get_mut();
             *age += 1;
@@ -348,7 +384,7 @@ impl<C, Out: 'static> CacheData<C, Out> {
 
 impl<C, Out> Default for CacheData<C, Out> {
     fn default() -> Self {
-        Self { tree: CallTree::new() }
+        Self { tree: CallTree::new(), ghost: Default::default() }
     }
 }
 

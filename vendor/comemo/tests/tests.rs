@@ -9,6 +9,10 @@ use comemo::{Track, Tracked, TrackedMut, evict, memoize, track};
 use quickcheck::Arbitrary;
 use serial_test::serial;
 
+/// (fork) Held by the tests that switch a process-wide policy and by those that rely on the
+/// default one, which do not all run serially.
+static POLICY: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 macro_rules! test {
     (miss: $call:expr, $result:expr) => {{
         assert_eq!($call, $result);
@@ -148,6 +152,7 @@ fn test_evict() {
 #[test]
 #[serial]
 fn test_evict_cost_keep() {
+    let _policy = POLICY.lock().unwrap_or_else(|e| e.into_inner());
     #[memoize]
     fn slow(x: u8) -> u8 {
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -175,6 +180,40 @@ fn test_evict_cost_keep() {
     evict(0);
     test!(miss: slow(1), 1);
     comemo::set_cost_keep(0);
+    evict(0);
+}
+
+/// (fork) With admission on, a result is stored only when its key comes again within the
+/// admission age; the first computation only remembers the key.
+#[test]
+#[serial]
+fn test_admission() {
+    let _policy = POLICY.lock().unwrap_or_else(|e| e.into_inner());
+    #[memoize]
+    fn twice(x: u8) -> u8 {
+        x
+    }
+
+    evict(0);
+    comemo::set_admission(2);
+    test!(miss: twice(1), 1);
+    // (the key was remembered, not stored: computed again, now stored)
+    test!(miss: twice(1), 1);
+    test!(hit: twice(1), 1);
+    // a key not seen within the admission age is not stored
+    test!(miss: twice(2), 2);
+    for _ in 0..3 {
+        evict(5);
+    }
+    test!(miss: twice(2), 2);
+    test!(miss: twice(2), 2);
+    test!(hit: twice(2), 2);
+    // the stored key keeps being stored on a new computation (its call tree has it)
+    test!(hit: twice(1), 1);
+    comemo::set_admission(0);
+    evict(0);
+    test!(miss: twice(3), 3);
+    test!(hit: twice(3), 3);
     evict(0);
 }
 
@@ -640,6 +679,8 @@ fn test_with_disabled() {
 
 #[quickcheck_macros::quickcheck]
 fn test_memoize_quickcheck(cases: Cases) {
+    // (fork) not while a test has switched a process-wide policy (admission, cost keep)
+    let _policy = POLICY.lock().unwrap_or_else(|e| e.into_inner());
     for Case(map, tree) in cases.0 {
         let mut c1 = Counter(0);
         let r1 = fuzzable_unmemoized(&map, &mut c1, &tree);
