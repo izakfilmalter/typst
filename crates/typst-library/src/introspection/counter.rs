@@ -799,7 +799,12 @@ impl Introspect for CounterAtIntrospection {
     ) -> Self::Output {
         let Self(counter, loc, _) = self;
         let selector = counter.select(introspector, *loc);
-        let sequence = sequence(counter, &selector, engine, introspector)?;
+        // (fork) the page counter's stops from the introspector's cache, one tracked call
+        let cached = if counter.is_page() { introspector.page_counter_stops(&selector) } else { None };
+        let sequence = match cached {
+            Some(stops) => stops.0.as_ref().clone(),
+            None => sequence(counter, &selector, engine, introspector)?,
+        };
         let offset = introspector.query_count_before(&selector, *loc);
         let (mut state, page) = sequence[offset].clone();
         if counter.is_page() {
@@ -833,7 +838,12 @@ impl Introspect for CounterBothIntrospection {
     ) -> Self::Output {
         let Self(counter, loc, _) = self;
         let selector = counter.select(introspector, *loc);
-        let sequence = sequence(counter, &selector, engine, introspector)?;
+        // (fork) the page counter's stops from the introspector's cache, one tracked call
+        let cached = if counter.is_page() { introspector.page_counter_stops(&selector) } else { None };
+        let sequence = match cached {
+            Some(stops) => stops.0.as_ref().clone(),
+            None => sequence(counter, &selector, engine, introspector)?,
+        };
         let offset = introspector.query_count_before(&selector, *loc);
         let (mut at_state, at_page) = sequence[offset].clone();
         let (mut final_state, final_page) = sequence.last().unwrap().clone();
@@ -873,7 +883,12 @@ impl Introspect for CounterFinalIntrospection {
     ) -> Self::Output {
         let Self(counter, loc, _) = self;
         let selector = counter.select(introspector, *loc);
-        let sequence = sequence(counter, &selector, engine, introspector)?;
+        // (fork) the page counter's stops from the introspector's cache, one tracked call
+        let cached = if counter.is_page() { introspector.page_counter_stops(&selector) } else { None };
+        let sequence = match cached {
+            Some(stops) => stops.0.as_ref().clone(),
+            None => sequence(counter, &selector, engine, introspector)?,
+        };
         let (mut state, page) = sequence.last().unwrap().clone();
         if counter.is_page() {
             let delta = introspector
@@ -964,6 +979,50 @@ fn sequence_impl(
     }
 
     Ok(stops)
+}
+
+/// (fork) The page counter's stops, shared and hashed once (see
+/// `Introspector::page_counter_stops`).
+#[derive(Debug, Clone)]
+pub struct CounterStops(pub Arc<EcoVec<(CounterState, NonZeroUsize)>>, Arc<std::sync::OnceLock<u128>>);
+
+impl std::hash::Hash for CounterStops {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_u128(*self.1.get_or_init(|| typst_utils::hash128(&*self.0)));
+    }
+}
+
+impl CounterStops {
+    /// The page counter's stops over the matches of its update selector, as
+    /// `sequence_impl` computes them for the page counter (the same steps, in the same
+    /// order); `None` when an update is a function, which needs an engine.
+    pub fn compute(
+        elems: impl IntoIterator<Item = Content>,
+        page_of: impl Fn(Location) -> Option<NonZeroUsize>,
+    ) -> Option<Self> {
+        let mut current = CounterState::init(true);
+        let mut page = NonZeroUsize::ONE;
+        let mut stops = eco_vec![(current.clone(), page)];
+        for elem in elems {
+            let prev = page;
+            page = page_of(elem.location().unwrap()).unwrap_or(NonZeroUsize::ONE);
+            let delta = page.get() - prev.get();
+            if delta > 0 {
+                current.step(NonZeroUsize::ONE, delta as u64);
+            }
+            match elem.with::<dyn Count>() {
+                Some(countable) => match countable.update().map(|u| u.v) {
+                    Some(CounterUpdate::Set(state)) => current = state,
+                    Some(CounterUpdate::Step(level)) => current.step(level, 1),
+                    Some(CounterUpdate::Func(_)) => return None,
+                    None => {}
+                },
+                None => current.step(NonZeroUsize::ONE, 1),
+            }
+            stops.push((current.clone(), page));
+        }
+        Some(Self(Arc::new(stops), Arc::new(std::sync::OnceLock::new())))
+    }
 }
 
 /// The warning when a counter failed to converge.

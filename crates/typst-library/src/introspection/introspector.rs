@@ -12,7 +12,7 @@ use typst_syntax::VirtualPath;
 
 use crate::diag::{StrResult, bail};
 use crate::foundations::{Content, Label, Repr, Selector};
-use crate::introspection::{DocumentPosition, Location, Tag};
+use crate::introspection::{CounterStops, DocumentPosition, Location, Tag};
 use crate::model::Numbering;
 
 /// Serves inquiries for pieces of information from the compilation output.
@@ -80,6 +80,13 @@ pub trait Introspector: Send + Sync {
     /// built once per selector and introspector. A function of a page that reads only its
     /// page's markers records (and validates) its page's matches, not the document's.
     fn query_positions_on(&self, selector: &Selector, page: NonZeroUsize) -> LocatedPositions;
+
+    /// (fork) The page counter's states at its updates (`selector`: the page counter's
+    /// update selector), as `counter::sequence` computes them, without an engine: `None`
+    /// when an update is a function (which needs one) or the introspector has no cache for
+    /// it. One tracked call whose hash covers every state, where the sequence's own memo
+    /// records a page lookup per update and validates them all on each `counter(page).at`.
+    fn page_counter_stops(&self, selector: &Selector) -> Option<CounterStops>;
 
     /// Returns the page numbering for the given location, if any.
     fn page_numbering(&self, location: Location) -> Option<&Numbering>;
@@ -166,6 +173,10 @@ impl Introspector for EmptyIntrospector {
 
     fn query_positions_on(&self, _: &Selector, _: NonZeroUsize) -> LocatedPositions {
         LocatedPositions(Located::new(EcoVec::new(), |_| None, |_| None))
+    }
+
+    fn page_counter_stops(&self, _: &Selector) -> Option<CounterStops> {
+        None
     }
 
     fn page_numbering(&self, _: Location) -> Option<&Numbering> {
@@ -813,6 +824,7 @@ impl Located {
 pub struct LocatedCache(
     RwLock<FxHashMap<u128, Located>>,
     RwLock<FxHashMap<u128, Arc<FxHashMap<NonZeroUsize, Located>>>>,
+    RwLock<FxHashMap<u128, Option<CounterStops>>>,
 );
 
 impl LocatedCache {
@@ -824,6 +836,20 @@ impl LocatedCache {
         }
         let l = f();
         self.0.write().unwrap().entry(hash).or_insert(l).clone()
+    }
+
+    /// (fork) The page counter's stops for `selector`, or `f()`'s, cached.
+    pub fn counter_stops_or(
+        &self,
+        selector: &Selector,
+        f: impl FnOnce() -> Option<CounterStops>,
+    ) -> Option<CounterStops> {
+        let hash = typst_utils::hash128(selector);
+        if let Some(s) = self.2.read().unwrap().get(&hash) {
+            return s.clone();
+        }
+        let s = f();
+        self.2.write().unwrap().entry(hash).or_insert(s).clone()
     }
 
     /// The matches of `selector` on `page` (`f`: all of them, as for `get_or`).
@@ -851,6 +877,7 @@ impl Clone for LocatedCache {
         Self(
             RwLock::new(self.0.read().unwrap().clone()),
             RwLock::new(self.1.read().unwrap().clone()),
+            RwLock::new(self.2.read().unwrap().clone()),
         )
     }
 }

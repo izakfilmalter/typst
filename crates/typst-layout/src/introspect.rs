@@ -140,6 +140,18 @@ impl Introspector for PagedIntrospector {
         LocatedPositions(self.located(selector))
     }
 
+    fn page_counter_stops(
+        &self,
+        selector: &Selector,
+    ) -> Option<typst_library::introspection::CounterStops> {
+        self.located.counter_stops_or(selector, || {
+            typst_library::introspection::CounterStops::compute(
+                Introspector::query(self, selector),
+                |l| Introspector::page(self, l),
+            )
+        })
+    }
+
     fn query_positions_on(&self, selector: &Selector, page: NonZeroUsize) -> LocatedPositions {
         LocatedPositions(self.located.on_page(selector, page, || {
             Located::new(

@@ -126,6 +126,13 @@ impl Introspector for HtmlIntrospector {
         typst_library::introspection::LocatedPositions(self.located(selector))
     }
 
+    fn page_counter_stops(
+        &self,
+        _: &Selector,
+    ) -> Option<typst_library::introspection::CounterStops> {
+        None
+    }
+
     fn query_positions_on(
         &self,
         selector: &Selector,
