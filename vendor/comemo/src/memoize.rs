@@ -14,7 +14,8 @@ use crate::tree::{CallTree, InsertError};
 static EVICTORS: RwLock<Vec<fn(usize)>> = RwLock::new(Vec::new());
 
 /// (fork) The memoized functions' caches by name: eviction function and statistics.
-static NAMED: RwLock<Vec<(&'static str, fn(usize), fn() -> CacheStats)>> = RwLock::new(Vec::new());
+#[allow(clippy::type_complexity)]
+static NAMED: RwLock<Vec<(&'static str, fn(usize), fn() -> CacheStats, fn(bool))>> = RwLock::new(Vec::new());
 
 /// (fork) One memoized function's cache: stored results, call-tree nodes, and hits and
 /// misses since the last `stats`.
@@ -143,7 +144,7 @@ where
     // only its key remembered: most results of a layout are never asked for again, and
     // storing them, their call trees and their eviction cost time and memory.)
     let mut data = cache.0.write();
-    let admit_age = ADMIT_AGE.load(Ordering::Relaxed);
+    let admit_age = if cache.5.load(Ordering::Relaxed) { 0 } else { ADMIT_AGE.load(Ordering::Relaxed) };
     if admit_age > 0 && !data.tree.has_key(key) && data.ghost.insert(key, 0).is_none() {
         drop(data);
         #[cfg(feature = "testing")]
@@ -189,7 +190,7 @@ pub fn evict(max_age: usize) {
     for subevict in EVICTORS.read().iter() {
         subevict(max_age);
     }
-    for (_, subevict, _) in NAMED.read().iter() {
+    for (_, subevict, _, _) in NAMED.read().iter() {
         subevict(max_age);
     }
 
@@ -203,7 +204,7 @@ pub fn evict_with(default: usize, policy: &dyn Fn(&str) -> usize) {
     for subevict in EVICTORS.read().iter() {
         subevict(default);
     }
-    for (name, subevict, _) in NAMED.read().iter() {
+    for (name, subevict, _, _) in NAMED.read().iter() {
         let age = policy(name);
         if age != usize::MAX {
             subevict(age);
@@ -240,12 +241,29 @@ pub fn set_cost_keep(us_per_eviction: u64) {
 
 /// (fork) Statistics of every named cache.
 pub fn stats() -> Vec<(&'static str, CacheStats)> {
-    NAMED.read().iter().map(|(name, _, stats)| (*name, stats())).collect()
+    NAMED.read().iter().map(|(name, _, stats, _)| (*name, stats())).collect()
 }
 
+/// (fork) Exempt the named caches `policy` picks (by `module::path::fn`) from admission
+/// (`set_admission`): they store every result, as without it. For caches whose results a
+/// later layout iteration reuses (kept across iterations), so the first iteration's results
+/// are stored at once. Applies to the caches registered so far and to later ones.
+pub fn set_admission_exempt(policy: fn(&str) -> bool) {
+    *EXEMPT.write() = Some(policy);
+    for (name, _, _, exempt) in NAMED.read().iter() {
+        exempt(policy(name));
+    }
+}
+
+/// (fork) The admission exemption policy, for caches registered after it was set.
+static EXEMPT: RwLock<Option<fn(&str) -> bool>> = RwLock::new(None);
+
 /// (fork) Register a named cache (the `memoize` macro does this).
-pub fn register_named(name: &'static str, evict: fn(usize), stats: fn() -> CacheStats) {
-    NAMED.write().push((name, evict, stats));
+pub fn register_named(name: &'static str, evict: fn(usize), stats: fn() -> CacheStats, exempt: fn(bool)) {
+    if let Some(policy) = *EXEMPT.read() {
+        exempt(policy(name));
+    }
+    NAMED.write().push((name, evict, stats, exempt));
 }
 
 /// Register an eviction function in the global list.
@@ -261,6 +279,7 @@ pub struct Cache<C, Out>(
     AtomicUsize,
     LazyLock<parking_lot::Mutex<std::collections::HashMap<String, usize>>>,
     AtomicU64,
+    std::sync::atomic::AtomicBool,
 );
 
 /// (fork) Record why lookups miss (`set_explain`).
@@ -279,12 +298,17 @@ impl<C: 'static, Out: 'static> Cache<C, Out> {
     /// pointer cannot be passed as an argument otherwise the function
     /// passed to `Lazy::new` is a closure and not a function pointer.
     pub const fn new(init: fn() -> RwLock<CacheData<C, Out>>) -> Self {
-        Self(LazyLock::new(init), AtomicUsize::new(0), AtomicUsize::new(0), LazyLock::new(Default::default), AtomicU64::new(0))
+        Self(LazyLock::new(init), AtomicUsize::new(0), AtomicUsize::new(0), LazyLock::new(Default::default), AtomicU64::new(0), std::sync::atomic::AtomicBool::new(false))
     }
 
     /// Evict all entries whose age is larger than or equal to `max_age`.
     pub fn evict(&self, max_age: usize) {
         self.0.write().evict(max_age);
+    }
+
+    /// (fork) Store every result of this cache, admission or not (`set_admission_exempt`).
+    pub fn set_admission_exempt(&self, exempt: bool) {
+        self.5.store(exempt, Ordering::Relaxed);
     }
 
     /// (fork) This cache's statistics; resets the hit and miss counters when `reset`.

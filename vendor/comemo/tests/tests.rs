@@ -210,6 +210,8 @@ fn test_admission() {
     test!(hit: twice(2), 2);
     // the stored key keeps being stored on a new computation (its call tree has it)
     test!(hit: twice(1), 1);
+    // (`set_admission_exempt` works on named caches, which only the fork's own macro
+    // registers: these tests use the published `comemo-macros`, so anf's memo stats check it)
     comemo::set_admission(0);
     evict(0);
     test!(miss: twice(3), 3);

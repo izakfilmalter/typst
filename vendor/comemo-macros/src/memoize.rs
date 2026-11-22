@@ -156,6 +156,7 @@ fn process(function: &Function) -> Result<TokenStream> {
                 ::core::concat!(::core::module_path!(), "::", #name),
                 |max_age| __CACHE.evict(max_age),
                 || __CACHE.stats(),
+                |exempt| __CACHE.set_admission_exempt(exempt),
             );
             ::core::default::Default::default()
         });
