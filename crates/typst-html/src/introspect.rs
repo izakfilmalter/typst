@@ -126,6 +126,20 @@ impl Introspector for HtmlIntrospector {
         typst_library::introspection::LocatedPositions(self.located(selector))
     }
 
+    fn query_positions_on(
+        &self,
+        selector: &Selector,
+        page: NonZeroUsize,
+    ) -> typst_library::introspection::LocatedPositions {
+        let by_page = self.located(selector).by_page();
+        typst_library::introspection::LocatedPositions(
+            by_page
+                .get(&page)
+                .cloned()
+                .unwrap_or_else(typst_library::introspection::Located::empty),
+        )
+    }
+
     fn page_numbering(&self, _: Location) -> Option<&Numbering> {
         None
     }

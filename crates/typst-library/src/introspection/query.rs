@@ -194,9 +194,17 @@ pub fn query_pages(
     span: Span,
     /// What to query, as for `query`.
     target: LocatableSelector,
+    /// (fork) Only the matches on this page, in the same order: one tracked call that
+    /// records that page's matches (a page's function then depends on its own page).
+    #[named]
+    #[default]
+    page: Option<NonZeroUsize>,
 ) -> HintedStrResult<Array> {
     context.introspect()?;
-    let located = engine.introspect(QueryPagesIntrospection(target.0, span)).0;
+    let located = match page {
+        Some(page) => engine.introspect(QueryOnPageIntrospection(target.0, page, span)).0,
+        None => engine.introspect(QueryPagesIntrospection(target.0, span)).0,
+    };
     Ok(located
         .elems()
         .iter()
@@ -222,9 +230,16 @@ pub fn query_positions(
     span: Span,
     /// What to query, as for `query`.
     target: LocatableSelector,
+    /// (fork) Only the matches on this page, in the same order (see `query-pages`).
+    #[named]
+    #[default]
+    page: Option<NonZeroUsize>,
 ) -> HintedStrResult<Array> {
     context.introspect()?;
-    let located = engine.introspect(QueryPositionsIntrospection(target.0, span)).0;
+    let located = match page {
+        Some(page) => engine.introspect(QueryOnPageIntrospection(target.0, page, span)).0,
+        None => engine.introspect(QueryPositionsIntrospection(target.0, span)).0,
+    };
     Ok(located
         .elems()
         .iter()
@@ -239,6 +254,33 @@ pub fn query_positions(
             )
         })
         .collect())
+}
+
+/// (fork) The matches of a selector on one page, with their positions.
+#[derive(Debug, Clone, PartialEq, Hash)]
+pub struct QueryOnPageIntrospection(pub Selector, pub NonZeroUsize, pub Span);
+
+impl Introspect for QueryOnPageIntrospection {
+    type Output = LocatedPositions;
+
+    fn introspect(
+        &self,
+        _: &mut Engine,
+        introspector: Tracked<dyn Introspector + '_>,
+    ) -> Self::Output {
+        introspector.query_positions_on(&self.0, self.1)
+    }
+
+    fn diagnose(&self, history: &History<Self::Output>) -> SourceDiagnostic {
+        let lengths = history.as_ref().map(|l| l.0.elems().len());
+        let things = format_selector(&self.0, "elements");
+        let what = if !lengths.converged() {
+            eco_format!("number of {things} on page {}", self.1)
+        } else {
+            eco_format!("positions of {things} on page {}", self.1)
+        };
+        format_convergence_warning(self.2, &lengths, &what)
+    }
 }
 
 /// (fork) The matches of a selector with their pages.

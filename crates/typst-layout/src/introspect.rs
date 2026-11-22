@@ -140,6 +140,16 @@ impl Introspector for PagedIntrospector {
         LocatedPositions(self.located(selector))
     }
 
+    fn query_positions_on(&self, selector: &Selector, page: NonZeroUsize) -> LocatedPositions {
+        LocatedPositions(self.located.on_page(selector, page, || {
+            Located::new(
+                Introspector::query(self, selector),
+                |l| Introspector::page(self, l),
+                |l| Introspector::position(self, l),
+            )
+        }))
+    }
+
     fn page_numbering(&self, location: Location) -> Option<&Numbering> {
         let page = self.page(location)?;
         self.page_numberings.get(page.get() - 1)?.as_ref()

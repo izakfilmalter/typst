@@ -75,6 +75,12 @@ pub trait Introspector: Send + Sync {
     /// (fork) The matches of a query with each match's position (see `query_pages`).
     fn query_positions(&self, selector: &Selector) -> LocatedPositions;
 
+    /// (fork) The matches of a query on one page, with their positions, in the order of
+    /// `query`: what `query_positions` gives filtered to that page, from an index by page
+    /// built once per selector and introspector. A function of a page that reads only its
+    /// page's markers records (and validates) its page's matches, not the document's.
+    fn query_positions_on(&self, selector: &Selector, page: NonZeroUsize) -> LocatedPositions;
+
     /// Returns the page numbering for the given location, if any.
     fn page_numbering(&self, location: Location) -> Option<&Numbering>;
 
@@ -156,6 +162,10 @@ impl Introspector for EmptyIntrospector {
 
     fn query_positions(&self, selector: &Selector) -> LocatedPositions {
         LocatedPositions(Located::new(self.query(selector), |_| None, |_| None))
+    }
+
+    fn query_positions_on(&self, _: &Selector, _: NonZeroUsize) -> LocatedPositions {
+        LocatedPositions(Located::new(EcoVec::new(), |_| None, |_| None))
     }
 
     fn page_numbering(&self, _: Location) -> Option<&Numbering> {
@@ -766,11 +776,44 @@ impl Located {
     pub fn positions(&self) -> &[Option<DocumentPosition>] {
         &self.0.positions
     }
+
+    /// (fork) The matches by page, each page's in this order (matches without a page are
+    /// on none).
+    pub fn by_page(&self) -> FxHashMap<NonZeroUsize, Located> {
+        let r = &self.0;
+        let mut idx: FxHashMap<NonZeroUsize, Vec<usize>> = FxHashMap::default();
+        for (i, p) in r.pages.iter().enumerate() {
+            if let Some(p) = p {
+                idx.entry(*p).or_default().push(i);
+            }
+        }
+        idx.into_iter()
+            .map(|(p, is)| {
+                let located = Self(Arc::new(LocatedRepr {
+                    elems: is.iter().map(|&i| r.elems[i].clone()).collect(),
+                    pages: is.iter().map(|&i| r.pages[i]).collect(),
+                    positions: is.iter().map(|&i| r.positions[i].clone()).collect(),
+                    hash_pages: OnceLock::new(),
+                    hash_positions: OnceLock::new(),
+                }));
+                (p, located)
+            })
+            .collect()
+    }
+
+    /// (fork) No matches.
+    pub fn empty() -> Self {
+        Self::new(EcoVec::new(), |_| None, |_| None)
+    }
 }
 
-/// (fork) A cache of `Located` results per selector hash, for an introspector.
+/// (fork) A cache of `Located` results per selector hash, for an introspector, and of
+/// their indexes by page (`query_positions_on`).
 #[derive(Default)]
-pub struct LocatedCache(RwLock<FxHashMap<u128, Located>>);
+pub struct LocatedCache(
+    RwLock<FxHashMap<u128, Located>>,
+    RwLock<FxHashMap<u128, Arc<FxHashMap<NonZeroUsize, Located>>>>,
+);
 
 impl LocatedCache {
     /// The cached result for `selector`, or `f()`'s, cached.
@@ -782,11 +825,33 @@ impl LocatedCache {
         let l = f();
         self.0.write().unwrap().entry(hash).or_insert(l).clone()
     }
+
+    /// The matches of `selector` on `page` (`f`: all of them, as for `get_or`).
+    pub fn on_page(
+        &self,
+        selector: &Selector,
+        page: NonZeroUsize,
+        f: impl FnOnce() -> Located,
+    ) -> Located {
+        let hash = typst_utils::hash128(selector);
+        let index = self.1.read().unwrap().get(&hash).cloned();
+        let index = match index {
+            Some(index) => index,
+            None => {
+                let index = Arc::new(self.get_or(selector, f).by_page());
+                self.1.write().unwrap().entry(hash).or_insert(index).clone()
+            }
+        };
+        index.get(&page).cloned().unwrap_or_else(Located::empty)
+    }
 }
 
 impl Clone for LocatedCache {
     fn clone(&self) -> Self {
-        Self(RwLock::new(self.0.read().unwrap().clone()))
+        Self(
+            RwLock::new(self.0.read().unwrap().clone()),
+            RwLock::new(self.1.read().unwrap().clone()),
+        )
     }
 }
 
