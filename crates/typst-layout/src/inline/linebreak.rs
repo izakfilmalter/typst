@@ -65,7 +65,7 @@ const LINEBREAK_DATA: CodePointMapDataBorrowed<LineBreak> =
     CodePointMapDataBorrowed::new();
 
 /// A line break opportunity.
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum Breakpoint {
     /// Just a normal opportunity (e.g. after a space).
     Normal,
@@ -246,8 +246,10 @@ fn linebreak_optimized<'a>(
 ) -> Vec<Line<'a>> {
     let metrics = CostMetrics::compute(p);
     let costed = metrics.overshrink > 1.0 || metrics.allow_ragged;
+    // (fork) the lines the paragraph's searches build, shared by them (`LineCache`)
+    let cache = LineCache::default();
     if !costed {
-        return linebreak_optimized_shape(engine, p, width, metrics);
+        return linebreak_optimized_shape(engine, p, width, metrics, &cache);
     }
     // (fork) The paragraph-level retry: the paragraph is broken first without the
     // costs that answer a line out of its limits (`costs.overshrink`, a ragged first
@@ -256,12 +258,12 @@ fn linebreak_optimized<'a>(
     // paragraph longer or shorter moves everything after it.
     let plain_metrics =
         CostMetrics { overshrink: 1.0, allow_ragged: false, ..metrics };
-    let plain = linebreak_optimized_shape(engine, p, width, plain_metrics);
+    let plain = linebreak_optimized_shape(engine, p, width, plain_metrics, &cache);
     if !wants_retry(p, width, &plain, &metrics) {
         return plain;
     }
     let plain_shift = p.config.hang_shift.get();
-    let retry = linebreak_optimized_shape(engine, p, width, metrics);
+    let retry = linebreak_optimized_shape(engine, p, width, metrics, &cache);
     if retry.len() == plain.len() {
         retry
     } else {
@@ -298,8 +300,9 @@ fn linebreak_optimized_shape<'a>(
     p: &'a Preparation<'a>,
     width: Abs,
     mut metrics: CostMetrics,
+    cache: &LineCache<'a>,
 ) -> Vec<Line<'a>> {
-    let best = linebreak_optimized_with_metrics(engine, p, width, &metrics);
+    let best = linebreak_optimized_with_metrics(engine, p, width, &metrics, cache);
     if metrics.contrast <= 0.0 || p.config.hang.0 < 2 || !shape_is_ltr(p, &best) {
         return best;
     }
@@ -309,7 +312,7 @@ fn linebreak_optimized_shape<'a>(
         return best;
     }
     metrics.exact_gap = true;
-    let candidate = linebreak_optimized_with_metrics(engine, p, width, &metrics);
+    let candidate = linebreak_optimized_with_metrics(engine, p, width, &metrics, cache);
     let after = shape_quality(p, width, &candidate, metrics.gap_unit);
     // Repair an actual failing shape without changing its line count or trading
     // contrast for excessive spaces. Existing tighter gaps cannot become tighter;
@@ -381,17 +384,18 @@ fn linebreak_optimized_with_metrics<'a>(
     p: &'a Preparation<'a>,
     width: Abs,
     metrics: &CostMetrics,
+    cache: &LineCache<'a>,
 ) -> Vec<Line<'a>> {
     let flex = p.config.hang_flex;
     if flex.is_zero() {
-        return linebreak_optimized_at(engine, p, width, metrics).0;
+        return linebreak_optimized_at(engine, p, width, metrics, cache).0;
     }
 
     // A paragraph shape with a flex: the indent that breaks the paragraph at
     // least cost (half steps within the flex), with as many lines as at the
     // nominal indent, the nominal indent on a tie.
     p.config.hang_shift.set(Abs::zero());
-    let (mut best, mut best_cost) = linebreak_optimized_at(engine, p, width, metrics);
+    let (mut best, mut best_cost) = linebreak_optimized_at(engine, p, width, metrics, cache);
     let count = best.len();
     // (lines beside the shape already even — no line past half its stretch, no
     // contrast between neighbours — keep the nominal indent: the trials cost a
@@ -424,7 +428,7 @@ fn linebreak_optimized_with_metrics<'a>(
     for k in [-1.0, -0.5, 0.5, 1.0] {
         let s = flex * k;
         p.config.hang_shift.set(s);
-        let (lines, cost) = linebreak_optimized_at(engine, p, width, metrics);
+        let (lines, cost) = linebreak_optimized_at(engine, p, width, metrics, cache);
         if lines.len() == count && cost < best_cost - BOUND_EPS {
             (best, best_cost, shift) = (lines, cost, s);
         }
@@ -440,6 +444,7 @@ fn linebreak_optimized_at<'a>(
     p: &'a Preparation<'a>,
     width: Abs,
     metrics: &CostMetrics,
+    cache: &LineCache<'a>,
 ) -> (Vec<Line<'a>>, Cost) {
     // Determines the exact costs of a likely good layout through Knuth-Plass
     // with approximate metrics. We can use this cost as an upper bound to prune
@@ -449,7 +454,7 @@ fn linebreak_optimized_at<'a>(
     let loose = p.config.looseness != 0;
     if loose
         && loose_bound()
-        && let Some(found) = linebreak_loose_bounded(engine, p, width, metrics)
+        && let Some(found) = linebreak_loose_bounded(engine, p, width, metrics, cache)
     {
         return found;
     }
@@ -461,7 +466,7 @@ fn linebreak_optimized_at<'a>(
 
     // Using the upper bound, perform exact optimized linebreaking.
     let (lines, cost, _, _) =
-        linebreak_optimized_bounded(engine, p, width, metrics, upper_bound, loose);
+        linebreak_optimized_bounded(engine, p, width, metrics, upper_bound, loose, cache);
     (lines, cost)
 }
 
@@ -492,10 +497,11 @@ fn linebreak_loose_bounded<'a>(
     p: &'a Preparation<'a>,
     width: Abs,
     metrics: &CostMetrics,
+    cache: &LineCache<'a>,
 ) -> Option<(Vec<Line<'a>>, Cost)> {
     let natural_bound = linebreak_optimized_approximate(engine, p, width, metrics);
     let (natural, _, _, _) =
-        linebreak_optimized_bounded(engine, p, width, metrics, natural_bound, false);
+        linebreak_optimized_bounded(engine, p, width, metrics, natural_bound, false, cache);
     let n0 = natural.len();
     drop(natural);
     let want = n0 as i64 + p.config.looseness;
@@ -530,7 +536,7 @@ fn linebreak_loose_bounded<'a>(
         return None;
     }
     let (lines, cost, best_count, count) =
-        linebreak_optimized_bounded(engine, p, width, metrics, bound, true);
+        linebreak_optimized_bounded(engine, p, width, metrics, bound, true, cache);
     (best_count == n0 && count == want as usize && lines.len() == count)
         .then_some((lines, cost))
 }
@@ -545,6 +551,7 @@ fn linebreak_optimized_bounded<'a>(
     metrics: &CostMetrics,
     upper_bound: Cost,
     loose: bool,
+    cache: &LineCache<'a>,
 ) -> (Vec<Line<'a>>, Cost, usize, usize) {
     /// An entry in the dynamic programming table for inline layout optimization.
     struct Entry<'a> {
@@ -645,13 +652,7 @@ fn linebreak_optimized_bounded<'a>(
             } else if let Some((_, l)) = built.iter().find(|(s, _)| *s == start) {
                 l.clone()
             } else {
-                let l = std::rc::Rc::new(line(
-                    engine,
-                    p,
-                    start..end,
-                    breakpoint,
-                    Some(&*pred.line),
-                ));
+                let l = cache.line(engine, p, start..end, breakpoint, Some(&*pred.line));
                 built.push((start, l.clone()));
                 l
             };
@@ -829,6 +830,7 @@ fn linebreak_optimized_bounded<'a>(
             metrics,
             Cost::INFINITY,
             loose,
+            cache,
         );
     }
 
@@ -2219,5 +2221,63 @@ mod shape_repair_tests {
         assert!(
             !ShapeQuality { min_gap: libm::log(0.49), ..clean }.improves(tight, 12, 12)
         );
+    }
+}
+
+/// (fork) The lines a paragraph's searches build, by text range and breakpoint, shared
+/// by every search of the paragraph's line breaking: the plain and the retried costs,
+/// the shape's measure tried at four indents, the loose retries. Each search built its
+/// candidate lines again (vol. I's viii.iv, one layout: 56 % of 3.6 M lines built were
+/// built before for the same paragraph). A line is a function of the paragraph, its
+/// range and its breakpoint, and of the line before only when that one ends in a hard
+/// hyphen (repeated at the start): those are built apiece, as the search built them.
+/// Within a budget of the glyphs the kept lines hold (`TYPST_LINE_CACHE_MB`, 32 per
+/// paragraph; 0: off), past which lines are built and not kept.
+#[derive(Default)]
+struct LineCache<'a> {
+    lines: std::cell::RefCell<
+        std::collections::HashMap<(usize, usize, Breakpoint), std::rc::Rc<Line<'a>>>,
+    >,
+    bytes: std::cell::Cell<usize>,
+}
+
+impl<'a> LineCache<'a> {
+    fn line(
+        &self,
+        engine: &Engine,
+        p: &'a Preparation<'a>,
+        range: Range,
+        breakpoint: Breakpoint,
+        pred: Option<&Line<'a>>,
+    ) -> std::rc::Rc<Line<'a>> {
+        static BUDGET: LazyLock<usize> = LazyLock::new(|| {
+            std::env::var("TYPST_LINE_CACHE_MB")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(32)
+                * 1024
+                * 1024
+        });
+        if *BUDGET == 0 || pred.is_some_and(|l| l.dash == Some(super::line::Dash::Hard)) {
+            return std::rc::Rc::new(line(engine, p, range, breakpoint, pred));
+        }
+        let key = (range.start, range.end, breakpoint);
+        if let Some(l) = self.lines.borrow().get(&key) {
+            return l.clone();
+        }
+        let l = std::rc::Rc::new(line(engine, p, range, breakpoint, pred));
+        // (the items, and every glyph a text item holds, owned or borrowed: an over-count)
+        let bytes = 64
+            + l.items
+                .iter()
+                .map(|item| {
+                    48 + item.text().map_or(0, |t| std::mem::size_of_val(t.glyphs.all()))
+                })
+                .sum::<usize>();
+        if self.bytes.get() + bytes <= *BUDGET {
+            self.bytes.set(self.bytes.get() + bytes);
+            self.lines.borrow_mut().insert(key, l.clone());
+        }
+        l
     }
 }
