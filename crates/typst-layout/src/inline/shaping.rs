@@ -1729,7 +1729,7 @@ impl HyphenFinds {
 /// fonts, which come from the font book (keyed by its hash). Shaping reads the world
 /// for nothing else and reports nothing, so a kept run is the run shaping would give.
 ///
-/// `TYPST_SHAPE_CACHE_MB` (64; 0: off) bounds the glyphs kept: sixteen shards, each
+/// `TYPST_SHAPE_CACHE_MB` (32; 0: off) bounds the glyphs kept: sixteen shards, each
 /// with two generations of half its share; a full generation becomes the old one and
 /// the old one is let go, and a run found in the old one moves to the new.
 mod shape_cache {
@@ -1762,7 +1762,7 @@ mod shape_cache {
         let mb = std::env::var("TYPST_SHAPE_CACHE_MB")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(64);
+            .unwrap_or(32);
         mb * 1024 * 1024 / SHARDS / 2
     });
 
