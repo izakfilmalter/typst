@@ -164,7 +164,7 @@ pub fn line<'a>(
         && should_repeat_hyphen(pred_text.lang, full)
         && let Some((base_idx, base)) = items.leading_text_indexed()
         && let Some(hyphen) =
-            ShapedText::hyphen(engine, p.config.fallback, base, trim.shaping, false)
+            ShapedText::hyphen(engine, p.config.fallback, base, trim.shaping, false, &p.hyphens)
     {
         items.prepend(Item::Text(hyphen), base_idx.before());
     }
@@ -173,7 +173,7 @@ pub fn line<'a>(
     if dash == Some(Dash::Soft)
         && let Some((base_idx, base)) = items.trailing_text_indexed()
         && let Some(hyphen) =
-            ShapedText::hyphen(engine, p.config.fallback, base, trim.shaping, true)
+            ShapedText::hyphen(engine, p.config.fallback, base, trim.shaping, true, &p.hyphens)
     {
         items.push(Item::Text(hyphen), base_idx.after());
     }

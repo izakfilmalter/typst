@@ -668,32 +668,42 @@ impl<'a> ShapedText<'a> {
         base: &ShapedText<'a>,
         pos: usize,
         soft: bool,
+        finds: &HyphenFinds,
     ) -> Option<Self> {
-        let world = engine.world;
-        let book = world.book();
-        let fallback_func = if fallback {
-            Some(|| book.select_fallback(None, base.variant, "-"))
-        } else {
-            None
-        };
-        let mut chain = families(base.styles)
-            .filter(|family| family.covers().is_none_or(|c| c.is_match("-")))
-            .map(|family| book.select(family.as_str(), base.variant))
-            .chain(fallback_func.iter().map(|f| f()))
-            .flatten();
+        // (fork) The font, glyph, advance and size are a function of the styles, the
+        // variant and `fallback` (and the world's fonts, the same for the paragraph):
+        // found once per paragraph for each (`HyphenFinds`), and the item built from
+        // them as before.
+        let found = finds.find(base.styles, base.variant, fallback, || {
+            let world = engine.world;
+            let book = world.book();
+            let fallback_func = if fallback {
+                Some(|| book.select_fallback(None, base.variant, "-"))
+            } else {
+                None
+            };
+            let mut chain = families(base.styles)
+                .filter(|family| family.covers().is_none_or(|c| c.is_match("-")))
+                .map(|family| book.select(family.as_str(), base.variant))
+                .chain(fallback_func.iter().map(|f| f()))
+                .flatten();
+            chain.find_map(|id| {
+                let size = base.styles.resolve(TextElem::size);
+                let variations = base.styles.get_cloned(TextElem::variations);
+                let font = world
+                    .font(id)
+                    .map(|font| font.instantiate(base.variant, size, &variations))?;
+                let ttf = font.ttf();
+                let glyph_id = ttf.glyph_index('-')?;
+                let x_advance = font.to_em(ttf.glyph_hor_advance(glyph_id)?);
+                Some((font, glyph_id.0, x_advance, size))
+            })
+        });
 
-        chain.find_map(|id| {
-            let size = base.styles.resolve(TextElem::size);
-            let variations = base.styles.get_cloned(TextElem::variations);
-            let font = world
-                .font(id)
-                .map(|font| font.instantiate(base.variant, size, &variations))?;
-            let ttf = font.ttf();
-            let glyph_id = ttf.glyph_index('-')?;
-            let x_advance = font.to_em(ttf.glyph_hor_advance(glyph_id)?);
+        found.map(|(font, glyph_id, x_advance, size)| {
             let (c, text) = if soft { (SHY, SHY_STR) } else { (HYPHEN, HYPHEN_STR) };
 
-            Some(ShapedText {
+            ShapedText {
                 base: pos,
                 text,
                 dir: base.dir,
@@ -703,7 +713,7 @@ impl<'a> ShapedText<'a> {
                 variant: base.variant,
                 glyphs: Glyphs::from_vec(vec![ShapedGlyph {
                     font,
-                    glyph_id: glyph_id.0,
+                    glyph_id,
                     tracking_applied: false,
                     x_advance,
                     x_offset: Em::zero(),
@@ -716,7 +726,7 @@ impl<'a> ShapedText<'a> {
                     is_justifiable: false,
                     script: Script::Common,
                 }]),
-            })
+            }
         })
     }
 
@@ -1616,4 +1626,38 @@ fn is_justifiable(
         || is_cjk_left_aligned_punctuation(c, x_advance, stretchability, style)
         || is_cjk_right_aligned_punctuation(c, x_advance, stretchability)
         || is_cjk_center_aligned_punctuation(c, style)
+}
+
+/// (fork) A paragraph's hyphens, found once for each style chain (by identity, as `==`
+/// compares chains: every slice of a text item has its item's chain, and the chains a
+/// paragraph's items hold live as long as its preparation), variant and fallback flag:
+/// its line breaking asks for a hyphen on every candidate line ending at a hyphenation
+/// (vol. I's viii.iv: 524 762 calls, 44 different), and each chose the font again.
+#[derive(Default)]
+pub struct HyphenFinds(
+    std::cell::RefCell<Vec<((usize, usize, usize), FontVariant, bool, HyphenFound)>>,
+);
+
+type HyphenFound = Option<(FontInstance, u16, Em, Abs)>;
+
+impl HyphenFinds {
+    fn find(
+        &self,
+        styles: StyleChain,
+        variant: FontVariant,
+        fallback: bool,
+        f: impl FnOnce() -> HyphenFound,
+    ) -> HyphenFound {
+        if let Some((.., found)) = self
+            .0
+            .borrow()
+            .iter()
+            .find(|(s, v, b, _)| *s == styles.identity() && *v == variant && *b == fallback)
+        {
+            return found.clone();
+        }
+        let found = f();
+        self.0.borrow_mut().push((styles.identity(), variant, fallback, found.clone()));
+        found
+    }
 }

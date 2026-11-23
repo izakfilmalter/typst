@@ -27,6 +27,9 @@ pub struct Preparation<'a> {
     pub indices: Vec<usize>,
     /// The span mapper.
     pub spans: SpanMapper,
+    /// (fork) The hyphens' fonts, glyphs, advances and sizes found for the
+    /// paragraph's line breaking (`ShapedText::hyphen`).
+    pub hyphens: HyphenFinds,
 }
 
 impl<'a> Preparation<'a> {
@@ -117,6 +120,7 @@ pub fn prepare<'a>(
         items,
         indices,
         spans,
+        hyphens: HyphenFinds::default(),
     })
 }
 

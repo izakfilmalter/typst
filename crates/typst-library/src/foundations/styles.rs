@@ -788,6 +788,18 @@ impl Debug for StyleChain<'_> {
     }
 }
 
+impl StyleChain<'_> {
+    /// (fork) The chain's identity, as `==` compares chains: its first link's
+    /// address and length and the address of the rest.
+    pub fn identity(&self) -> (usize, usize, usize) {
+        (
+            self.head.as_ptr() as usize,
+            self.head.len(),
+            self.tail.map_or(0, |t| t as *const Self as usize),
+        )
+    }
+}
+
 impl PartialEq for StyleChain<'_> {
     fn eq(&self, other: &Self) -> bool {
         ptr::eq(self.head, other.head)
