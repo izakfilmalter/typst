@@ -1746,11 +1746,14 @@ mod shape_cache {
 
     const SHARDS: usize = 16;
     type Run = (FontVariant, Vec<ShapedGlyph>, std::sync::Arc<[WorldCall]>);
+    /// (a kept run is shared: a lookup clones the pointer under the shard's lock and the
+    /// glyphs after it)
+    type Kept = std::sync::Arc<Run>;
 
     #[derive(Default)]
     struct Shard {
-        new: HashMap<u128, Run>,
-        old: HashMap<u128, Run>,
+        new: HashMap<u128, Kept>,
+        old: HashMap<u128, Kept>,
         bytes: usize,
     }
 
@@ -1786,23 +1789,27 @@ mod shape_cache {
     }
 
     pub fn get(key: u128) -> Option<Run> {
-        let mut shard = KEPT[key as usize % SHARDS].lock().ok()?;
-        if let Some(run) = shard.new.get(&key) {
-            return Some(run.clone());
-        }
-        let run = shard.old.remove(&key)?;
-        let found = run.clone();
-        insert(&mut shard, key, run);
-        Some(found)
+        let found: Kept = {
+            let mut shard = KEPT[key as usize % SHARDS].lock().ok()?;
+            match shard.new.get(&key) {
+                Some(run) => run.clone(),
+                None => {
+                    let run = shard.old.remove(&key)?;
+                    insert(&mut shard, key, run.clone());
+                    run
+                }
+            }
+        };
+        Some((found.0, found.1.clone(), found.2.clone()))
     }
 
     pub fn put(key: u128, variant: FontVariant, glyphs: &[ShapedGlyph], calls: &[WorldCall]) {
         if let Ok(mut shard) = KEPT[key as usize % SHARDS].lock() {
-            insert(&mut shard, key, (variant, glyphs.to_vec(), calls.into()));
+            insert(&mut shard, key, std::sync::Arc::new((variant, glyphs.to_vec(), calls.into())));
         }
     }
 
-    fn insert(shard: &mut Shard, key: u128, run: Run) {
+    fn insert(shard: &mut Shard, key: u128, run: Kept) {
         let bytes = size(&run);
         if bytes > *GEN_BYTES {
             return;
