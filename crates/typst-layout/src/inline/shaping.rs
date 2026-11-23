@@ -74,11 +74,12 @@ pub struct Glyphs<'a> {
     /// `to_mut().last_mut().adjustability` were reset, without cloning borrowed glyphs
     /// (`flatten_last`). Applied for real by `to_mut` and `trim`.
     flat_last: bool,
-    /// (fork) The kept glyphs' summed stretchability and shrinkability
-    /// (`ShapedText::stretchability`, `shrinkability`), found once: the line breaker
-    /// asks for them on every candidate line, mostly of a paragraph's own items,
-    /// unchanged. Every `&mut self` method clears it (the glyphs are private).
-    sums: std::sync::OnceLock<(Abs, Abs)>,
+    /// (fork) The kept glyphs' summed stretchability and shrinkability and their
+    /// count of justifiable glyphs (`ShapedText::stretchability`, `shrinkability`,
+    /// `justifiables`), found once: the line breaker asks for them on every candidate
+    /// line, mostly of a paragraph's own items, unchanged. Every `&mut self` method
+    /// clears it (the glyphs are private).
+    sums: std::sync::OnceLock<(Abs, Abs, usize)>,
 }
 
 impl<'a> Glyphs<'a> {
@@ -161,8 +162,8 @@ impl<'a> Glyphs<'a> {
 
     /// (fork) The kept glyphs' summed stretchability and shrinkability, each summed
     /// in the glyphs' order as `ShapedText::stretchability` and `shrinkability`
-    /// always summed them, once (`sums`).
-    fn adjust_sums(&self) -> (Abs, Abs) {
+    /// always summed them, and their justifiable glyphs counted, once (`sums`).
+    fn adjust_sums(&self) -> (Abs, Abs, usize) {
         *self.sums.get_or_init(|| {
             let start = self.kept.start;
             let stretch = self
@@ -181,7 +182,8 @@ impl<'a> Glyphs<'a> {
                     (a.shrinkability.0 + a.shrinkability.1).at(g.size)
                 })
                 .sum();
-            (stretch, shrink)
+            let justifiables = self.iter().filter(|g| g.is_justifiable()).count();
+            (stretch, shrink, justifiables)
         })
     }
 
@@ -597,7 +599,7 @@ impl<'a> ShapedText<'a> {
     /// How many glyphs are in the text where we can insert additional
     /// space when encountering underfull lines.
     pub fn justifiables(&self) -> usize {
-        self.glyphs.iter().filter(|g| g.is_justifiable()).count()
+        self.glyphs.adjust_sums().2
     }
 
     /// Whether the last glyph is a CJK character which should not be justified
