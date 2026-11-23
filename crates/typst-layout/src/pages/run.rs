@@ -210,7 +210,7 @@ fn layout_page_run_impl(
                 let span = style.span();
                 let line = span.id().and_then(|id| {
                     let source = engine.world.source(id).ok()?;
-                    let range = source.range(span)?;
+                    let range = source.find(span)?.range();
                     Some((
                         format!("{:?}", id.vpath()),
                         source.lines().byte_to_line(range.start).map_or(0, |l| l + 1),
