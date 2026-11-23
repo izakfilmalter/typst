@@ -149,6 +149,7 @@ where
         drop(data);
         #[cfg(feature = "testing")]
         crate::testing::register_miss();
+        work_tick();
         return output;
     }
     if admit_age > 0 {
@@ -177,7 +178,36 @@ where
     #[cfg(feature = "testing")]
     crate::testing::register_miss();
 
+    work_tick();
     output
+}
+
+/// (fork) Every how many computed results the work tick runs its hook (0: never), and
+/// the results computed so far (`set_work_tick`).
+static WORK_EVERY: AtomicUsize = AtomicUsize::new(0);
+static WORK_DONE: AtomicUsize = AtomicUsize::new(0);
+static WORK_HOOK: RwLock<Option<fn()>> = RwLock::new(None);
+
+/// (fork) Run `hook` on the thread that computes every `every`th memoized result (0:
+/// never), once that result is in the cache and no cache is locked: a trim by the work
+/// done, not by a clock, so what a compile lets go, and so what it computes again, does
+/// not depend on the machine's speed or load. Never changes an output.
+pub fn set_work_tick(every: usize, hook: Option<fn()>) {
+    *WORK_HOOK.write() = hook;
+    WORK_EVERY.store(every, Ordering::Relaxed);
+}
+
+fn work_tick() {
+    let every = WORK_EVERY.load(Ordering::Relaxed);
+    if every == 0 {
+        return;
+    }
+    if (WORK_DONE.fetch_add(1, Ordering::Relaxed) + 1) % every == 0 {
+        let hook = *WORK_HOOK.read();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
 }
 
 /// Evict the global cache.
