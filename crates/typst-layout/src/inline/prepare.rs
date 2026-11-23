@@ -12,6 +12,8 @@ use super::*;
 /// Only when a line break falls onto a text index that is not safe-to-break per
 /// rustybuzz, we have to reshape that portion.
 pub struct Preparation<'a> {
+    /// (experiment) a number of its own, for the counters
+    pub stats_id: u64,
     /// The full text.
     pub text: &'a str,
     /// Configuration for inline layout.
@@ -110,7 +112,9 @@ pub fn prepare<'a>(
         add_cjk_latin_spacing(&mut items);
     }
 
+    static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     Ok(Preparation {
+        stats_id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         config,
         text,
         bidi: is_bidi.then_some(bidi),

@@ -134,8 +134,7 @@ pub fn line<'a>(
     if super::shaping::stats_on() {
         let hard = pred.is_some_and(|l| l.dash == Some(Dash::Hard));
         super::shaping::note_line(typst_utils::hash128(&(
-            p as *const Preparation as usize,
-            p.text,
+            p.stats_id,
             range.clone(),
             format!("{breakpoint:?}"),
             hard,
