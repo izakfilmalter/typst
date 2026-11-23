@@ -884,6 +884,20 @@ fn shape<'a>(
     lang: Lang,
     region: Option<Region>,
 ) -> ShapedText<'a> {
+    // (fork) A run shaped before with these inputs: its glyphs again (`shape_cache`).
+    let key = shape_cache::key(engine, base, text, styles, dir, lang, region);
+    if let Some((variant, glyphs)) = key.and_then(shape_cache::get) {
+        return ShapedText {
+            base,
+            text,
+            dir,
+            lang,
+            region,
+            styles,
+            variant,
+            glyphs: Glyphs::from_vec(glyphs),
+        };
+    }
     let size = styles.resolve(TextElem::size);
     let shift_settings = styles.get(TextElem::shift_settings);
     let mut ctx = ShapingContext {
@@ -913,6 +927,9 @@ fn shape<'a>(
     #[cfg(debug_assertions)]
     assert_glyph_ranges_in_order(&ctx.glyphs, dir);
 
+    if let Some(key) = key {
+        shape_cache::put(key, ctx.variant, &ctx.glyphs);
+    }
     ShapedText {
         base,
         text,
@@ -1659,5 +1676,102 @@ impl HyphenFinds {
         let found = f();
         self.0.borrow_mut().push((styles.identity(), variant, fallback, found.clone()));
         found
+    }
+}
+
+/// (fork) Shaped runs kept for the process, within a byte budget: a book's layout
+/// shapes the same run again and again — each layout iteration prepares its paragraphs
+/// anew, and line breaking reshapes the same line slices (vol. I's viii.iv, one layout:
+/// 87 % of 94 016 first shapings and 85 % of 101 222 reshapings repeat an earlier one).
+///
+/// A run's glyphs are a function of its inputs: the text, where it starts (the glyphs'
+/// ranges count from there), its styles, direction, language and region, and the
+/// fonts, which come from the font book (keyed by its hash). Shaping reads the world
+/// for nothing else and reports nothing, so a kept run is the run shaping would give.
+///
+/// `TYPST_SHAPE_CACHE_MB` (64; 0: off) bounds the glyphs kept: sixteen shards, each
+/// with two generations of half its share; a full generation becomes the old one and
+/// the old one is let go, and a run found in the old one moves to the new.
+mod shape_cache {
+    use std::collections::HashMap;
+    use std::sync::{LazyLock, Mutex};
+
+    use typst_library::World;
+    use typst_library::engine::Engine;
+    use typst_library::foundations::StyleChain;
+    use typst_library::layout::Dir;
+    use typst_library::text::{FontVariant, Lang, Region};
+
+    use super::ShapedGlyph;
+
+    const SHARDS: usize = 16;
+    type Run = (FontVariant, Vec<ShapedGlyph>);
+
+    #[derive(Default)]
+    struct Shard {
+        new: HashMap<u128, Run>,
+        old: HashMap<u128, Run>,
+        bytes: usize,
+    }
+
+    /// Each generation's share of the budget, in bytes (0: off).
+    static GEN_BYTES: LazyLock<usize> = LazyLock::new(|| {
+        let mb = std::env::var("TYPST_SHAPE_CACHE_MB")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(64);
+        mb * 1024 * 1024 / SHARDS / 2
+    });
+
+    static KEPT: LazyLock<Vec<Mutex<Shard>>> =
+        LazyLock::new(|| (0..SHARDS).map(|_| Mutex::default()).collect());
+
+    fn size(glyphs: &[ShapedGlyph]) -> usize {
+        64 + std::mem::size_of_val(glyphs)
+    }
+
+    /// The key of a run's inputs (None: the cache is off).
+    pub fn key(
+        engine: &Engine,
+        base: usize,
+        text: &str,
+        styles: StyleChain,
+        dir: Dir,
+        lang: Lang,
+        region: Option<Region>,
+    ) -> Option<u128> {
+        (*GEN_BYTES > 0).then(|| {
+            typst_utils::hash128(&(engine.world.book(), base, text, styles, dir, lang, region))
+        })
+    }
+
+    pub fn get(key: u128) -> Option<Run> {
+        let mut shard = KEPT[key as usize % SHARDS].lock().ok()?;
+        if let Some(run) = shard.new.get(&key) {
+            return Some(run.clone());
+        }
+        let run = shard.old.remove(&key)?;
+        let found = run.clone();
+        insert(&mut shard, key, run);
+        Some(found)
+    }
+
+    pub fn put(key: u128, variant: FontVariant, glyphs: &[ShapedGlyph]) {
+        if let Ok(mut shard) = KEPT[key as usize % SHARDS].lock() {
+            insert(&mut shard, key, (variant, glyphs.to_vec()));
+        }
+    }
+
+    fn insert(shard: &mut Shard, key: u128, run: Run) {
+        let bytes = size(&run.1);
+        if bytes > *GEN_BYTES {
+            return;
+        }
+        if shard.bytes + bytes > *GEN_BYTES {
+            shard.old = std::mem::take(&mut shard.new);
+            shard.bytes = 0;
+        }
+        shard.bytes += bytes;
+        shard.new.insert(key, run);
     }
 }
