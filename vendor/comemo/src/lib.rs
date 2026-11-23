@@ -93,6 +93,7 @@ mod constraint;
 mod hash;
 mod input;
 mod memoize;
+mod record;
 mod track;
 mod tree;
 
@@ -103,6 +104,11 @@ pub use crate::constraint::Constraint;
 pub use crate::hash::Prehashed;
 pub use crate::memoize::{CacheStats, Frame, evict, evict_with, frame, in_frame, new_epoch, set_admission, set_admission_exempt, set_cost_keep, set_explain, set_nesting, stats};
 pub use crate::track::{Track, Tracked, TrackedMut};
+/// (fork) incremental layout's call records
+pub use crate::record::{
+    Recorded, Recorder, Tee, check, check_mut, replay, replay_mut, set_sink_mut, sink_of,
+    sink_of_mut, with_sink,
+};
 
 #[cfg(feature = "macros")]
 pub use comemo_macros::{memoize, track};

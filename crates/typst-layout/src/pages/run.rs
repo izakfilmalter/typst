@@ -19,7 +19,12 @@ use typst_library::visualize::Paint;
 use typst_library::{Library, World};
 use typst_utils::{LazyHash, Numeric, Protected};
 
-use crate::flow::{ColumnOptions, FlowMode, layout_flow};
+use std::sync::Arc;
+
+use typst_library::introspection::SplitLocator;
+
+use crate::flow::{ColumnOptions, FlowMode, WorkSnap, layout_flow, layout_flow_inc};
+use crate::incremental::{self, FlowInc, Marks, Recs, RunLog, with_tees};
 
 /// A mostly finished layout for one page. Needs only knowledge of its exact
 /// page number to be finalized into a `Page`. (Because the margins can depend
@@ -186,6 +191,182 @@ fn layout_page_run_impl(
 
     // Layout the children.
     let area = size - margin.sum_by_axis();
+
+    // (fork) incremental layout of a long run: see `crate::incremental`.
+    if incremental::mode() > 0 && children.len() >= incremental::min_children() {
+        let header = header.clone().map(|h| h.artifact(ArtifactKind::Header));
+        let footer = footer.clone().map(|f| f.artifact(ArtifactKind::Footer));
+        let background = background.clone().map(|b| b.artifact(ArtifactKind::Background));
+        let key = typst_utils::hash128(&(link.key(), styles, area));
+        drop(locator);
+        if std::env::var("TYPST_INC_LOG").as_deref() == Ok("2") {
+            eprintln!(
+                "typst-inc: key {key:032x}: link {:032x} styles {:032x} area {:?}",
+                link.key(),
+                typst_utils::hash128(&styles),
+                area
+            );
+            for (i, style) in styles.entries().enumerate() {
+                let span = style.span();
+                let line = span.id().and_then(|id| {
+                    let source = engine.world.source(id).ok()?;
+                    let range = source.range(span)?;
+                    Some((
+                        format!("{:?}", id.vpath()),
+                        source.lines().byte_to_line(range.start).map_or(0, |l| l + 1),
+                    ))
+                });
+                eprintln!(
+                    "typst-inc: style {i} {} {:?} {:032x}",
+                    style.element().map_or("-", |e| e.name()),
+                    line,
+                    typst_utils::hash128(style)
+                );
+            }
+        }
+
+        let page_of = |engine: &mut Engine,
+                       locator: &mut SplitLocator,
+                       inner: Frame|
+         -> SourceResult<LayoutedPage> {
+            let mut layout_marginal = |content: &Option<Content>, area, align| {
+                let Some(content) = content else { return Ok(None) };
+                let aligned = content.clone().set(AlignElem::alignment, align);
+                crate::layout_frame(
+                    engine,
+                    &aligned,
+                    locator.next(&content.span()),
+                    styles,
+                    Region::new(area, Axes::splat(true)),
+                )
+                .map(Some)
+            };
+            let header_size = Size::new(inner.width(), margin.top - header_ascent);
+            let footer_size = Size::new(inner.width(), margin.bottom - footer_descent);
+            let full_size = inner.size() + margin.sum_by_axis() + bleed.sum_by_axis();
+            let mid = HAlignment::Center + VAlignment::Horizon;
+            Ok(LayoutedPage {
+                fill: fill.clone(),
+                numbering: numbering.clone(),
+                supplement: supplement.clone(),
+                header: layout_marginal(&header, header_size, Alignment::BOTTOM)?,
+                footer: layout_marginal(&footer, footer_size, Alignment::TOP)?,
+                background: layout_marginal(&background, full_size, mid)?,
+                foreground: layout_marginal(foreground, full_size, mid)?,
+                inner,
+                margin,
+                margin_two_sided,
+                bleed,
+                bleed_two_sided,
+                binding,
+            })
+        };
+
+        let run = |engine: &mut Engine,
+                   candidates: Vec<Arc<RunLog<WorkSnap>>>|
+         -> SourceResult<(Vec<LayoutedPage>, RunLog<WorkSnap>, usize, usize)> {
+            let mut locator = Locator::link(&link).split();
+            let marg_candidates = candidates.clone();
+            let mut inc = FlowInc { candidates, resumed: None, out: None };
+            let fragment = layout_flow_inc(
+                engine,
+                children,
+                &mut locator,
+                styles,
+                Regions::repeat(area, area.map(Abs::is_finite)),
+                ColumnOptions {
+                    count: styles.get(PageElem::columns),
+                    balanced: styles.get(ColumnsElem::balanced),
+                    gutter: styles.get_cloned(ColumnsElem::gutter).resolve(styles),
+                    separator: styles.get_cloned(ColumnsElem::separator),
+                },
+                &mut inc,
+            )?;
+            let t_marg = std::time::Instant::now();
+            let resumed = inc.resumed.as_ref().map_or(0, |r| r.1);
+            // The marginals, page by page: a page's are taken from the newest
+            // log whose page there had the same size and whose marginals' reads
+            // give the same results (they read nothing else of the page).
+            let mut reuse = 0;
+            let mut marg = Vec::with_capacity(fragment.len());
+            let mut pages = Vec::with_capacity(fragment.len());
+            for (j, inner) in fragment.into_iter().enumerate() {
+                let found = marg_candidates.iter().take(2).find_map(|log| {
+                    let old = log.pages.get(j)?;
+                    let calls = log.marg.get(j)?;
+                    (old.inner.size() == inner.size() && calls.check(engine, Marks::default(), calls.end()))
+                        .then(|| (old, calls.clone()))
+                });
+                if let Some((old, calls)) = found {
+                    calls.replay(engine, calls.end());
+                    // (the locator counts the marginals it would have laid out)
+                    for m in [&header, &footer, &background, foreground] {
+                        if let Some(c) = m {
+                            locator.next(&c.span());
+                        }
+                    }
+                    pages.push(LayoutedPage { inner, ..old.clone() });
+                    marg.push(calls);
+                    reuse += 1;
+                } else {
+                    let mrecs = Recs::default();
+                    let page = with_tees(engine, &mrecs, |engine| page_of(engine, &mut locator, inner))?;
+                    pages.push(page);
+                    marg.push(Arc::new(mrecs.take()));
+                }
+            }
+            if incremental::log_on() {
+                eprintln!(
+                    "typst-inc: run {} pages ({} marginals taken): marginals {} ms",
+                    pages.len(),
+                    reuse,
+                    t_marg.elapsed().as_millis()
+                );
+            }
+            let log = RunLog {
+                flow: inc.out.take().unwrap(),
+                pages: pages.clone(),
+                marg,
+            };
+            Ok((pages, log, resumed, reuse))
+        };
+
+        let candidates = incremental::candidates::<WorkSnap>(key);
+        let (pages, log, resumed, _) = run(&mut engine, candidates)?;
+        if incremental::mode() == 2 && resumed > 0 {
+            let (full, flog, _, _) = run(&mut engine, vec![])?;
+            let h = |p: &LayoutedPage| {
+                typst_utils::hash128(&(
+                    &p.inner,
+                    &p.header,
+                    &p.footer,
+                    &p.background,
+                    &p.foreground,
+                ))
+            };
+            let first_diff = (0..pages.len().max(full.len()))
+                .find(|&i| pages.get(i).map(h) != full.get(i).map(h));
+            match first_diff {
+                None => eprintln!(
+                    "typst-inc: check: {} pages identical ({} regions taken)",
+                    full.len(),
+                    resumed
+                ),
+                Some(i) => eprintln!(
+                    "typst-inc: check: MISMATCH at page {} of {} (full) / {} (resumed), {} regions taken",
+                    i + 1,
+                    full.len(),
+                    pages.len(),
+                    resumed
+                ),
+            }
+            incremental::put(key, flog);
+            return Ok(full);
+        }
+        incremental::put(key, log);
+        return Ok(pages);
+    }
+
     let fragment = layout_flow(
         &mut engine,
         children,
@@ -222,6 +403,8 @@ fn layout_page_run_impl(
     let footer = footer.clone().map(|f| f.artifact(ArtifactKind::Footer));
     let background = background.clone().map(|b| b.artifact(ArtifactKind::Background));
 
+    let t_marg = std::time::Instant::now();
+    let n_frag = fragment.len();
     for inner in fragment {
         let header_size = Size::new(inner.width(), margin.top - header_ascent);
         let footer_size = Size::new(inner.width(), margin.bottom - footer_descent);
@@ -244,5 +427,8 @@ fn layout_page_run_impl(
         });
     }
 
+    if n_frag > 1 && std::env::var_os("TYPST_INC_LOG").is_some() {
+        eprintln!("typst-inc: run {} pages: marginals {} ms", n_frag, t_marg.elapsed().as_millis());
+    }
     Ok(layouted)
 }
