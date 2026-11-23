@@ -74,6 +74,11 @@ pub struct Glyphs<'a> {
     /// `to_mut().last_mut().adjustability` were reset, without cloning borrowed glyphs
     /// (`flatten_last`). Applied for real by `to_mut` and `trim`.
     flat_last: bool,
+    /// (fork) The kept glyphs' summed stretchability and shrinkability
+    /// (`ShapedText::stretchability`, `shrinkability`), found once: the line breaker
+    /// asks for them on every candidate line, mostly of a paragraph's own items,
+    /// unchanged. Every `&mut self` method clears it (the glyphs are private).
+    sums: std::sync::OnceLock<(Abs, Abs)>,
 }
 
 impl<'a> Glyphs<'a> {
@@ -85,6 +90,7 @@ impl<'a> Glyphs<'a> {
             inner: Cow::Borrowed(glyphs),
             kept: 0..glyphs.len(),
             flat_last: false,
+            sums: std::sync::OnceLock::new(),
         }
     }
 
@@ -93,7 +99,12 @@ impl<'a> Glyphs<'a> {
     /// This happens after initial shaping.
     pub fn from_vec(glyphs: Vec<ShapedGlyph>) -> Self {
         let len = glyphs.len();
-        Self { inner: Cow::Owned(glyphs), kept: 0..len, flat_last: false }
+        Self {
+            inner: Cow::Owned(glyphs),
+            kept: 0..len,
+            flat_last: false,
+            sums: std::sync::OnceLock::new(),
+        }
     }
 
     /// Clone the internal glyph data to make it modifiable. Should be avoided
@@ -101,6 +112,7 @@ impl<'a> Glyphs<'a> {
     /// (benchmarks have shown ~10% slowdown on a text-heavy document if no
     /// borrowing is used).
     pub fn to_mut(&mut self) -> &mut [ShapedGlyph] {
+        self.sums = std::sync::OnceLock::new();
         if self.flat_last {
             self.flat_last = false;
             let last = self.kept.end - 1;
@@ -116,6 +128,7 @@ impl<'a> Glyphs<'a> {
     pub fn flatten_last(&mut self) -> bool {
         match self.last() {
             Some(g) if flat_last_ok(g) => {
+                self.sums = std::sync::OnceLock::new();
                 self.flat_last = true;
                 true
             }
@@ -138,11 +151,38 @@ impl<'a> Glyphs<'a> {
     /// Those glyphs will not be visible during normal operation anymore, only
     /// through [`all`](Self::all).
     pub fn trim(&mut self, f: impl FnMut(&ShapedGlyph) -> bool + Copy) {
+        self.sums = std::sync::OnceLock::new();
         if self.flat_last {
             self.to_mut();
         }
         let (start, end) = self.inner.split_prefix_suffix(f);
         self.kept = start..end;
+    }
+
+    /// (fork) The kept glyphs' summed stretchability and shrinkability, each summed
+    /// in the glyphs' order as `ShapedText::stretchability` and `shrinkability`
+    /// always summed them, once (`sums`).
+    fn adjust_sums(&self) -> (Abs, Abs) {
+        *self.sums.get_or_init(|| {
+            let start = self.kept.start;
+            let stretch = self
+                .iter()
+                .enumerate()
+                .map(|(j, g)| {
+                    let a = self.adjustability_at(start + j);
+                    (a.stretchability.0 + a.stretchability.1).at(g.size)
+                })
+                .sum();
+            let shrink = self
+                .iter()
+                .enumerate()
+                .map(|(j, g)| {
+                    let a = self.adjustability_at(start + j);
+                    (a.shrinkability.0 + a.shrinkability.1).at(g.size)
+                })
+                .sum();
+            (stretch, shrink)
+        })
     }
 
     /// Accesses all glyphs, not just the untrimmed ones.
@@ -571,28 +611,12 @@ impl<'a> ShapedText<'a> {
 
     /// The stretchability of the text.
     pub fn stretchability(&self) -> Abs {
-        let start = self.glyphs.kept.start;
-        self.glyphs
-            .iter()
-            .enumerate()
-            .map(|(j, g)| {
-                let a = self.glyphs.adjustability_at(start + j);
-                (a.stretchability.0 + a.stretchability.1).at(g.size)
-            })
-            .sum()
+        self.glyphs.adjust_sums().0
     }
 
     /// The shrinkability of the text
     pub fn shrinkability(&self) -> Abs {
-        let start = self.glyphs.kept.start;
-        self.glyphs
-            .iter()
-            .enumerate()
-            .map(|(j, g)| {
-                let a = self.glyphs.adjustability_at(start + j);
-                (a.shrinkability.0 + a.shrinkability.1).at(g.size)
-            })
-            .sum()
+        self.glyphs.adjust_sums().1
     }
 
     /// Reshape a range of the shaped text, reusing information from this
