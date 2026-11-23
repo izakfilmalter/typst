@@ -1655,6 +1655,16 @@ mod stats {
         seen: HashSet<u128>, seen_at: HashSet<u128>,
         reshape_sliced: u64, reshape_shaped: u64, reshape_sliced_bytes: u64, reshape_shaped_bytes: u64,
         hy: u64, hy_rep: u64, hy_seen: HashSet<u128>, n: u64,
+        lines: u64, line_rep: u64, line_seen: HashSet<u128>, searches: u64,
+    }
+    pub fn note_line(key: u128) {
+        let Ok(mut s) = ST.lock() else { return };
+        s.lines += 1;
+        if !s.line_seen.insert(key) { s.line_rep += 1; }
+        tick(&mut s);
+    }
+    pub fn note_search() {
+        if let Ok(mut s) = ST.lock() { s.searches += 1; }
     }
     static ST: LazyLock<Mutex<S>> = LazyLock::new(Default::default);
     pub fn note(origin: usize, key: u128, key_at: u128, bytes: usize) {
@@ -1679,12 +1689,23 @@ mod stats {
         s.n += 1;
         if s.n % 20000 == 0 {
             eprintln!(
-                "shape-stats: first {} calls {} B, repeats {} ({} B), at the same base {} ({} B) | reshape {} calls {} B, repeats {} ({} B), same base {} ({} B) | reshapes sliced {} ({} B) shaped {} ({} B) | hyphens {} repeats {} distinct {}",
-                s.calls[0], s.bytes[0], s.rep[0], s.rep_bytes[0], s.rep_at[0], s.rep_at_bytes[0],
+                "shape-stats: lines {} repeats {} searches {} | first {} calls {} B, repeats {} ({} B), at the same base {} ({} B) | reshape {} calls {} B, repeats {} ({} B), same base {} ({} B) | reshapes sliced {} ({} B) shaped {} ({} B) | hyphens {} repeats {} distinct {}",
+                s.lines, s.line_rep, s.searches, s.calls[0], s.bytes[0], s.rep[0], s.rep_bytes[0], s.rep_at[0], s.rep_at_bytes[0],
                 s.calls[1], s.bytes[1], s.rep[1], s.rep_bytes[1], s.rep_at[1], s.rep_at_bytes[1],
                 s.reshape_sliced, s.reshape_sliced_bytes, s.reshape_shaped, s.reshape_shaped_bytes,
                 s.hy, s.hy_rep, s.hy_seen.len()
             );
         }
     }
+}
+
+/// (experiment) whether the counters run
+pub(crate) fn stats_on() -> bool {
+    *stats::ON
+}
+pub(crate) fn note_line(key: u128) {
+    stats::note_line(key)
+}
+pub(crate) fn note_search() {
+    stats::note_search()
 }

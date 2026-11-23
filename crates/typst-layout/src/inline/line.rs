@@ -131,6 +131,16 @@ pub fn line<'a>(
     breakpoint: Breakpoint,
     pred: Option<&Line<'a>>,
 ) -> Line<'a> {
+    if super::shaping::stats_on() {
+        let hard = pred.is_some_and(|l| l.dash == Some(Dash::Hard));
+        super::shaping::note_line(typst_utils::hash128(&(
+            p as *const Preparation as usize,
+            p.text,
+            range.clone(),
+            format!("{breakpoint:?}"),
+            hard,
+        )));
+    }
     // The line's full text.
     let full = &p.text[range.clone()];
 

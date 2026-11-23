@@ -546,6 +546,9 @@ fn linebreak_optimized_bounded<'a>(
     upper_bound: Cost,
     loose: bool,
 ) -> (Vec<Line<'a>>, Cost, usize, usize) {
+    if super::shaping::stats_on() {
+        super::shaping::note_search();
+    }
     /// An entry in the dynamic programming table for inline layout optimization.
     struct Entry<'a> {
         pred: usize,
