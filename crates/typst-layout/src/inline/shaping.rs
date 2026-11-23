@@ -627,7 +627,11 @@ impl<'a> ShapedText<'a> {
     /// The text `range` is relative to the whole inline layout.
     pub fn reshape(&'a self, engine: &Engine, text_range: Range) -> ShapedText<'a> {
         let text = &self.text[text_range.start - self.base..text_range.end - self.base];
-        if let Some(glyphs) = self.slice_safe_to_break(text_range.clone()) {
+        let sliced = self.slice_safe_to_break(text_range.clone());
+        if *stats::ON {
+            stats::note_reshape(sliced.is_some(), text.len());
+        }
+        if let Some(glyphs) = sliced {
             #[cfg(debug_assertions)]
             assert_all_glyphs_in_range(glyphs, text, text_range.clone());
             Self {
@@ -641,7 +645,10 @@ impl<'a> ShapedText<'a> {
                 glyphs: Glyphs::from_slice(glyphs),
             }
         } else {
-            shape(
+            if *stats::ON {
+                stats::ORIGIN.with(|o| o.set(1));
+            }
+            let r = shape(
                 engine,
                 text_range.start,
                 text,
@@ -649,7 +656,11 @@ impl<'a> ShapedText<'a> {
                 self.dir,
                 self.lang,
                 self.region,
-            )
+            );
+            if *stats::ON {
+                stats::ORIGIN.with(|o| o.set(0));
+            }
+            r
         }
     }
 
@@ -669,6 +680,9 @@ impl<'a> ShapedText<'a> {
         pos: usize,
         soft: bool,
     ) -> Option<Self> {
+        if *stats::ON {
+            stats::note_hyphen(typst_utils::hash128(&(base.styles, base.variant, fallback, soft)));
+        }
         let world = engine.world;
         let book = world.book();
         let fallback_func = if fallback {
@@ -874,6 +888,14 @@ fn shape<'a>(
     lang: Lang,
     region: Option<Region>,
 ) -> ShapedText<'a> {
+    if *stats::ON {
+        stats::note(
+            stats::ORIGIN.with(|o| o.get()),
+            typst_utils::hash128(&(text, styles, dir, lang, region)),
+            typst_utils::hash128(&(base, text, styles, dir, lang, region)),
+            text.len(),
+        );
+    }
     let size = styles.resolve(TextElem::size);
     let shift_settings = styles.get(TextElem::shift_settings);
     let mut ctx = ShapingContext {
@@ -1616,4 +1638,53 @@ fn is_justifiable(
         || is_cjk_left_aligned_punctuation(c, x_advance, stretchability, style)
         || is_cjk_right_aligned_punctuation(c, x_advance, stretchability)
         || is_cjk_center_aligned_punctuation(c, style)
+}
+
+/// (experiment, not for merging) ANF_SHAPE_STATS=1: shaping calls by origin (0 first shaping,
+/// 1 a line slice's reshape), how many repeat an input seen before (text, styles, direction,
+/// language, region; and with the base), and the hyphens' repeats; printed every 20 000 calls.
+mod stats {
+    use std::cell::Cell;
+    use std::collections::HashSet;
+    use std::sync::{LazyLock, Mutex};
+    pub static ON: LazyLock<bool> = LazyLock::new(|| std::env::var_os("ANF_SHAPE_STATS").is_some());
+    thread_local! { pub static ORIGIN: Cell<usize> = const { Cell::new(0) }; }
+    #[derive(Default)]
+    struct S {
+        calls: [u64; 2], bytes: [u64; 2], rep: [u64; 2], rep_bytes: [u64; 2], rep_at: [u64; 2], rep_at_bytes: [u64; 2],
+        seen: HashSet<u128>, seen_at: HashSet<u128>,
+        reshape_sliced: u64, reshape_shaped: u64, reshape_sliced_bytes: u64, reshape_shaped_bytes: u64,
+        hy: u64, hy_rep: u64, hy_seen: HashSet<u128>, n: u64,
+    }
+    static ST: LazyLock<Mutex<S>> = LazyLock::new(Default::default);
+    pub fn note(origin: usize, key: u128, key_at: u128, bytes: usize) {
+        let Ok(mut s) = ST.lock() else { return };
+        let o = origin.min(1);
+        s.calls[o] += 1; s.bytes[o] += bytes as u64;
+        if !s.seen.insert(key) { s.rep[o] += 1; s.rep_bytes[o] += bytes as u64; }
+        if !s.seen_at.insert(key_at) { s.rep_at[o] += 1; s.rep_at_bytes[o] += bytes as u64; }
+        tick(&mut s);
+    }
+    pub fn note_reshape(sliced: bool, bytes: usize) {
+        let Ok(mut s) = ST.lock() else { return };
+        if sliced { s.reshape_sliced += 1; s.reshape_sliced_bytes += bytes as u64; } else { s.reshape_shaped += 1; s.reshape_shaped_bytes += bytes as u64; }
+    }
+    pub fn note_hyphen(key: u128) {
+        let Ok(mut s) = ST.lock() else { return };
+        s.hy += 1;
+        if !s.hy_seen.insert(key) { s.hy_rep += 1; }
+        tick(&mut s);
+    }
+    fn tick(s: &mut S) {
+        s.n += 1;
+        if s.n % 20000 == 0 {
+            eprintln!(
+                "shape-stats: first {} calls {} B, repeats {} ({} B), at the same base {} ({} B) | reshape {} calls {} B, repeats {} ({} B), same base {} ({} B) | reshapes sliced {} ({} B) shaped {} ({} B) | hyphens {} repeats {} distinct {}",
+                s.calls[0], s.bytes[0], s.rep[0], s.rep_bytes[0], s.rep_at[0], s.rep_at_bytes[0],
+                s.calls[1], s.bytes[1], s.rep[1], s.rep_bytes[1], s.rep_at[1], s.rep_at_bytes[1],
+                s.reshape_sliced, s.reshape_sliced_bytes, s.reshape_shaped, s.reshape_shaped_bytes,
+                s.hy, s.hy_rep, s.hy_seen.len()
+            );
+        }
+    }
 }
