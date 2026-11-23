@@ -216,6 +216,13 @@ impl<'a> Locator<'a> {
     pub fn relayout(&self) -> Self {
         Self { local: self.local, outer: self.outer }
     }
+
+    /// (fork) The local hash (since the last memoization boundary): two
+    /// locators under the same outer link are the same if their local hashes
+    /// are.
+    pub fn local_hash(&self) -> u128 {
+        self.local
+    }
 }
 
 #[comemo::track]
@@ -408,6 +415,12 @@ impl<'a> LocatorLink<'a> {
             kind: LinkKind::Measure(base, span),
             resolved: OnceLock::new(),
         }
+    }
+
+    /// (fork) A hash of the link's resolved value (incremental layout keys a
+    /// page run's checkpoints by it).
+    pub fn key(&self) -> u128 {
+        typst_utils::hash128(&self.resolve())
     }
 
     /// Resolve the link.

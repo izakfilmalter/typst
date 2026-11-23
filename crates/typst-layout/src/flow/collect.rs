@@ -820,6 +820,104 @@ impl PlacedChild<'_> {
     }
 }
 
+/// (fork, incremental layout) A [`MultiSpill`] by its child's index.
+#[derive(Debug, Clone)]
+pub struct SpillSnap {
+    pub idx: usize,
+    exist_non_empty_frame: bool,
+    first: Abs,
+    full: Abs,
+    backlog: Vec<Abs>,
+    min_backlog_len: usize,
+}
+
+impl<'a, 'b> MultiSpill<'a, 'b> {
+    /// The spill by its child's index in `all`.
+    pub fn snap(&self, all: &[Child<'a>]) -> Option<SpillSnap> {
+        let idx = all.iter().position(
+            |c| matches!(c, Child::Multi(m) if std::ptr::eq(&**m, self.multi)),
+        )?;
+        Some(SpillSnap {
+            idx,
+            exist_non_empty_frame: self.exist_non_empty_frame,
+            first: self.first,
+            full: self.full,
+            backlog: self.backlog.clone(),
+            min_backlog_len: self.min_backlog_len,
+        })
+    }
+}
+
+impl SpillSnap {
+    /// The spill again, of the child at its index in `all`.
+    pub fn restore<'a, 'b>(&self, all: &'b [Child<'a>]) -> Option<MultiSpill<'a, 'b>> {
+        let Some(Child::Multi(multi)) = all.get(self.idx) else { return None };
+        Some(MultiSpill {
+            exist_non_empty_frame: self.exist_non_empty_frame,
+            multi,
+            first: self.first,
+            full: self.full,
+            backlog: self.backlog.clone(),
+            min_backlog_len: self.min_backlog_len,
+        })
+    }
+}
+
+/// (fork, incremental layout) A hash of a collected child: what composing it
+/// reads of it (a line's frame; a block's or placed element's content, styles
+/// and locator, laid out later).
+pub fn child_hash(child: &Child) -> u128 {
+    use typst_utils::hash128;
+    match child {
+        Child::Tag(tag) => hash128(&(0u8, tag)),
+        Child::Rel(rel, weak) => hash128(&(1u8, rel, weak)),
+        Child::Fr(fr, weak) => hash128(&(2u8, fr, weak)),
+        Child::Line(line) => hash128(&(3u8, &line.frame, line.align, line.need)),
+        Child::Single(s) => hash128(&(
+            4u8,
+            s.align,
+            s.sticky,
+            s.alone,
+            s.fr,
+            s.elem,
+            s.styles,
+            s.locator.local_hash(),
+        )),
+        Child::Multi(m) => hash128(&(
+            5u8,
+            m.align,
+            m.sticky,
+            m.alone,
+            m.elem,
+            m.styles,
+            m.locator.local_hash(),
+        )),
+        Child::Placed(p) => hash128(&(
+            6u8,
+            p.align_x,
+            p.align_y,
+            p.scope,
+            p.float,
+            p.clearance,
+            p.delta,
+            p.elem,
+            p.styles,
+            p.locator.local_hash(),
+            p.alignment,
+        )),
+        Child::Flush => hash128(&7u8),
+        Child::Break(weak) => hash128(&(8u8, weak)),
+        Child::Balance(b) => hash128(&(
+            9u8,
+            b.snap,
+            b.offset,
+            b.level_notes,
+            b.notes_foot,
+            b.min_last,
+        )),
+    }
+}
+
 /// Wraps a parameterized computation and caches its latest output.
 ///
 /// - When the computation is performed multiple times consecutively with the

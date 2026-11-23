@@ -37,8 +37,9 @@ use typst_utils::{LazyHash, NonZeroExt, Numeric, Protected};
 use self::block::{layout_multi_block, layout_single_block};
 use self::collect::{
     BalanceSpec, Child, LineChild, MultiChild, MultiSpill, PlacedChild, SingleChild,
-    collect,
+    SpillSnap, child_hash, collect,
 };
+use crate::incremental::{FlowInc, FlowLog, RegionLog, Recs, with_tees};
 use self::compose::compose;
 
 /// Lays out content into a single region, producing a single frame.
@@ -210,6 +211,8 @@ pub fn layout_flow<'a>(
 
     // Collect the elements into pre-processed children. These are much easier
     // to handle than the raw elements.
+    let inc_log = mode == FlowMode::Root && std::env::var_os("TYPST_INC_LOG").is_some();
+    let t_collect = std::time::Instant::now();
     let bump = Bump::new();
     let children = collect(
         engine,
@@ -221,6 +224,7 @@ pub fn layout_flow<'a>(
         mode,
     )?;
 
+    let t_compose = std::time::Instant::now();
     let mut work = Work::new(&children);
     let mut finished = vec![];
 
@@ -257,6 +261,133 @@ pub fn layout_flow<'a>(
         regions.next();
     }
 
+    if inc_log && finished.len() > 1 {
+        eprintln!(
+            "typst-inc: flow {} children, {} regions: collect {} ms, compose {} ms",
+            children.len(),
+            finished.len(),
+            (t_compose - t_collect).as_millis(),
+            t_compose.elapsed().as_millis()
+        );
+    }
+    Ok(Fragment::frames(finished))
+}
+
+/// (fork) A root flow laid out incrementally (see [`crate::incremental`]):
+/// like [`layout_flow`], but it records each region and may start from a
+/// region of an earlier layout in `inc.candidates`.
+pub(crate) fn layout_flow_inc<'a>(
+    engine: &mut Engine,
+    children: &[Pair<'a>],
+    locator: &mut SplitLocator<'a>,
+    shared: StyleChain<'a>,
+    mut regions: Regions,
+    column: ColumnOptions,
+    inc: &mut FlowInc<WorkSnap>,
+) -> SourceResult<Fragment> {
+    let mode = FlowMode::Root;
+    let config = configuration(shared, regions, column, mode);
+    let t_collect = std::time::Instant::now();
+    let bump = Bump::new();
+    let children = collect(
+        engine,
+        &bump,
+        children,
+        locator.next(&()),
+        Size::new(config.columns.width, regions.full),
+        regions.expand.x,
+        mode,
+    )?;
+    let hashes: Vec<u128> = children.iter().map(child_hash).collect();
+    let t_compose = std::time::Instant::now();
+
+    let recs = Recs::default();
+    let mut logs: Vec<RegionLog<WorkSnap>> = vec![];
+    let mut finished = vec![];
+    let mut work = Work::new(&children);
+    let mut resumed = 0;
+
+    if let Some((log, k)) = inc.plan(engine, &hashes) {
+        let last = &log.flow.regions[k - 1];
+        if let Some(restored) =
+            last.snap.as_deref().and_then(|s| Work::restore(s, &children))
+        {
+            // The reads of the regions taken, as if they were made again (and
+            // recorded again, in the same order: the marks stay valid).
+            with_tees(engine, &recs, |engine| log.flow.calls.replay(engine, last.marks));
+            for r in &log.flow.regions[..k] {
+                logs.push(r.clone());
+                finished.push(r.frame.clone());
+                locator.next(&());
+                regions.next();
+            }
+            work = restored;
+            resumed = k;
+            inc.resumed = Some((log.clone(), k));
+        }
+    }
+
+    let result = with_tees(engine, &recs, |engine| -> SourceResult<()> {
+        // A flow taken whole from the log: its last region saw the end.
+        if resumed > 0
+            && work.done()
+            && (!regions.expand.y || regions.backlog.is_empty())
+        {
+            return Ok(());
+        }
+        loop {
+            let region_locator = locator.next(&());
+            let before = work.clone();
+            let mut frame = compose(
+                engine,
+                &mut work,
+                &config,
+                region_locator.relayout(),
+                regions,
+                false,
+            )?;
+            if work.stalled(&before) && regions.repeats() {
+                work = before;
+                frame = compose(
+                    engine,
+                    &mut work,
+                    &config,
+                    region_locator.relayout(),
+                    regions,
+                    true,
+                )?;
+            }
+            let hw = (children.len() - work.low.get() + 1)
+                .max(logs.last().map_or(0, |r| r.hw));
+            logs.push(RegionLog {
+                frame: frame.clone(),
+                marks: recs.marks(),
+                hw,
+                snap: work.snap(&children).map(std::sync::Arc::new),
+            });
+            finished.push(frame);
+
+            if work.done() && (!regions.expand.y || regions.backlog.is_empty()) {
+                break;
+            }
+
+            regions.next();
+        }
+        Ok(())
+    });
+    result?;
+
+    if crate::incremental::log_on() {
+        eprintln!(
+            "typst-inc: flow {} children, {} regions ({} taken): collect {} ms, compose {} ms",
+            children.len(),
+            finished.len(),
+            resumed,
+            (t_compose - t_collect).as_millis(),
+            t_compose.elapsed().as_millis()
+        );
+    }
+    inc.out = Some(FlowLog { hashes, regions: logs, calls: recs.take() });
     Ok(Fragment::frames(finished))
 }
 
@@ -360,6 +491,21 @@ struct Work<'a, 'b> {
     /// they were already handled and incorporated as column or page level
     /// insertions.
     skips: Rc<FxHashSet<Location>>,
+    /// (fork, incremental layout) The fewest children left at any point,
+    /// shared by all clones (restored snapshots included): how far the flow
+    /// has looked.
+    low: Rc<std::cell::Cell<usize>>,
+}
+
+/// (fork, incremental layout) The work state after a region, by child index.
+pub(crate) struct WorkSnap {
+    pos: usize,
+    spill: Option<SpillSnap>,
+    floats: Vec<usize>,
+    footnotes: EcoVec<Packed<FootnoteElem>>,
+    footnote_spill: Vec<FootnoteSpill>,
+    tags: Vec<usize>,
+    skips: Vec<Location>,
 }
 
 impl<'a, 'b> Work<'a, 'b> {
@@ -373,7 +519,70 @@ impl<'a, 'b> Work<'a, 'b> {
             footnote_spill: vec![],
             tags: EcoVec::new(),
             skips: Rc::new(FxHashSet::default()),
+            low: Rc::new(std::cell::Cell::new(children.len())),
         }
+    }
+
+    /// (fork) The state by child index in `all` (`None` if a reference into
+    /// the children can't be found).
+    fn snap(&self, all: &'b [Child<'a>]) -> Option<WorkSnap> {
+        let pos = all.len() - self.children.len();
+        let spill = match &self.spill {
+            Some(spill) => Some(spill.snap(all)?),
+            None => None,
+        };
+        let mut floats = Vec::with_capacity(self.floats.len());
+        for f in &self.floats {
+            floats.push(all.iter().position(
+                |c| matches!(c, Child::Placed(p) if std::ptr::eq(&**p, *f)),
+            )?);
+        }
+        let mut tags = Vec::with_capacity(self.tags.len());
+        for t in &self.tags {
+            tags.push(
+                all[..pos]
+                    .iter()
+                    .rposition(|c| matches!(c, Child::Tag(x) if std::ptr::eq(*x, *t)))?,
+            );
+        }
+        Some(WorkSnap {
+            pos,
+            spill,
+            floats,
+            footnotes: self.footnotes.clone(),
+            footnote_spill: self.footnote_spill.clone(),
+            tags,
+            skips: self.skips.iter().copied().collect(),
+        })
+    }
+
+    /// (fork) The state again, over the children `all` of another layout.
+    fn restore(snap: &WorkSnap, all: &'b [Child<'a>]) -> Option<Self> {
+        let spill = match &snap.spill {
+            Some(s) => Some(s.restore(all)?),
+            None => None,
+        };
+        let mut floats = EcoVec::new();
+        for &i in &snap.floats {
+            let Some(Child::Placed(p)) = all.get(i) else { return None };
+            floats.push(&**p);
+        }
+        let mut tags = EcoVec::new();
+        for &i in &snap.tags {
+            let Some(Child::Tag(t)) = all.get(i) else { return None };
+            tags.push(*t);
+        }
+        let children = all.get(snap.pos..)?;
+        Some(Self {
+            children,
+            spill,
+            floats,
+            footnotes: snap.footnotes.clone(),
+            footnote_spill: snap.footnote_spill.clone(),
+            tags,
+            skips: Rc::new(snap.skips.iter().copied().collect()),
+            low: Rc::new(std::cell::Cell::new(children.len())),
+        })
     }
 
     /// Get the first unprocessed child, from the start of the slice.
@@ -384,6 +593,9 @@ impl<'a, 'b> Work<'a, 'b> {
     /// Mark the `head()` child as processed, advancing the slice by one.
     fn advance(&mut self) {
         self.children = &self.children[1..];
+        if self.children.len() < self.low.get() {
+            self.low.set(self.children.len());
+        }
     }
 
     /// Whether all work is done. This means we can terminate flow layout.

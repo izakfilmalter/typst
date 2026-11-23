@@ -22,7 +22,8 @@ use typst_utils::{LazyHash, Protected};
 
 use self::collect::{Item, collect};
 use self::finalize::finalize;
-use self::run::{LayoutedPage, layout_blank_page, layout_page_run};
+pub(crate) use self::run::LayoutedPage;
+use self::run::{layout_blank_page, layout_page_run};
 use crate::{Page, PagedDocument};
 
 /// Layout content into a document.
