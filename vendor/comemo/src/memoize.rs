@@ -187,11 +187,21 @@ where
 static WORK_EVERY: AtomicUsize = AtomicUsize::new(0);
 static WORK_DONE: AtomicUsize = AtomicUsize::new(0);
 static WORK_HOOK: RwLock<Option<fn()>> = RwLock::new(None);
+/// (fork) The count at the last work tick's trim.
+static WORK_LAST: AtomicUsize = AtomicUsize::new(0);
 
-/// (fork) Run `hook` on the thread that computes every `every`th memoized result (0:
-/// never), once that result is in the cache and no cache is locked: a trim by the work
-/// done, not by a clock, so what a compile lets go, and so what it computes again, does
-/// not depend on the machine's speed or load. Never changes an output.
+thread_local! {
+    /// (fork) How deep this thread is in parallel work for another (`in_frame`).
+    static WORKER: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// (fork) Run `hook` once every `every` memoized results computed (0: never): a trim by
+/// the work done, not by a clock, so what a compile lets go, and so what it computes
+/// again, does not depend on the machine's speed or load. Every thread's results count;
+/// the hook runs only on a thread outside parallel work (`in_frame`: a caller waits for
+/// its workers, so a trim falls between their batches, never among them), on the first
+/// result such a thread computes once `every` more were computed since the last trim,
+/// after that result is in the cache and no cache is locked. Never changes an output.
 pub fn set_work_tick(every: usize, hook: Option<fn()>) {
     *WORK_HOOK.write() = hook;
     WORK_EVERY.store(every, Ordering::Relaxed);
@@ -202,7 +212,14 @@ fn work_tick() {
     if every == 0 {
         return;
     }
-    if (WORK_DONE.fetch_add(1, Ordering::Relaxed) + 1) % every == 0 {
+    let done = WORK_DONE.fetch_add(1, Ordering::Relaxed) + 1;
+    if WORKER.with(|w| w.get()) > 0 {
+        return;
+    }
+    let last = WORK_LAST.load(Ordering::Relaxed);
+    if done - last >= every
+        && WORK_LAST.compare_exchange(last, done, Ordering::Relaxed, Ordering::Relaxed).is_ok()
+    {
         let hook = *WORK_HOOK.read();
         if let Some(hook) = hook {
             hook();
@@ -519,6 +536,16 @@ pub fn frame() -> Option<Frame> {
 
 /// (fork) Run `f` in `frame` (from `frame()` on the thread that spawned this work).
 pub fn in_frame<R>(frame: Option<Frame>, f: impl FnOnce() -> R) -> R {
+    // (fork) a worker of a caller's parallel work: the work tick counts what it computes
+    // and trims only on the caller's side (`work_tick`)
+    struct Worker;
+    impl Drop for Worker {
+        fn drop(&mut self) {
+            WORKER.with(|w| w.set(w.get() - 1));
+        }
+    }
+    WORKER.with(|w| w.set(w.get() + 1));
+    let _worker = Worker;
     let Some(frame) = frame else { return f() };
     let saved = FRAME.with(|c| c.replace(Some(frame)));
     let out = f();
