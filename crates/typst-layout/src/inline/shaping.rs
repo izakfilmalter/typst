@@ -886,7 +886,18 @@ fn shape<'a>(
 ) -> ShapedText<'a> {
     // (fork) A run shaped before with these inputs: its glyphs again (`shape_cache`).
     let key = shape_cache::key(engine, base, text, styles, dir, lang, region);
-    if let Some((variant, glyphs)) = key.and_then(shape_cache::get) {
+    if let Some((variant, glyphs, calls)) = key.and_then(shape_cache::get) {
+        // (the world's tracked calls the shaping made, again, in order)
+        for call in calls.iter() {
+            match *call {
+                WorldCall::Book => {
+                    engine.world.book();
+                }
+                WorldCall::Font(id) => {
+                    engine.world.font(id);
+                }
+            }
+        }
         return ShapedText {
             base,
             text,
@@ -912,6 +923,7 @@ fn shape<'a>(
         fallback: styles.get(TextElem::fallback),
         dir,
         shift_settings,
+        calls: vec![],
     };
 
     if !text.is_empty() {
@@ -928,7 +940,7 @@ fn shape<'a>(
     assert_glyph_ranges_in_order(&ctx.glyphs, dir);
 
     if let Some(key) = key {
-        shape_cache::put(key, ctx.variant, &ctx.glyphs);
+        shape_cache::put(key, ctx.variant, &ctx.glyphs, &ctx.calls);
     }
     ShapedText {
         base,
@@ -955,10 +967,27 @@ struct ShapingContext<'a> {
     fallback: bool,
     dir: Dir,
     shift_settings: Option<ShiftSettings>,
+    /// (fork) The world's tracked calls this shaping made, in order (`WorldCall`).
+    calls: Vec<WorldCall>,
+}
+
+/// (fork) A tracked call shaping makes on the world: a run taken from the shaped-run
+/// cache (`shape_cache`) makes the same calls again, in the same order, so that what a
+/// memoized function around it records is the same whether the run was shaped or found
+/// (comemo stores a result by the sequence of tracked calls computing it made, and a
+/// computation of the same key that makes other calls is not stored).
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy)]
+pub enum WorldCall {
+    Book,
+    Font(usize),
 }
 
 pub trait SharedShapingContext<'a> {
     fn world(&self) -> Tracked<'a, dyn World + 'a>;
+
+    /// (fork) Note a tracked call on the world (`WorldCall`); nothing by default.
+    fn note_world(&mut self, _call: WorldCall) {}
 
     /// Font families that have been used with unlimited coverage.
     ///
@@ -982,6 +1011,10 @@ pub trait SharedShapingContext<'a> {
 impl<'a> SharedShapingContext<'a> for ShapingContext<'a> {
     fn world(&self) -> Tracked<'a, dyn World + 'a> {
         self.world
+    }
+
+    fn note_world(&mut self, call: WorldCall) {
+        self.calls.push(call);
     }
 
     fn used(&mut self) -> &mut Vec<FontInstance> {
@@ -1022,12 +1055,16 @@ where
     // Find the next available family.
     let world = ctx.world();
     let book = world.book();
+    ctx.note_world(WorldCall::Book);
     let mut selection = None;
     let mut covers = None;
     for family in families.by_ref() {
         selection = book
             .select(family.as_str(), ctx.variant())
-            .and_then(|id| world.font(id))
+            .and_then(|id| {
+                ctx.note_world(WorldCall::Font(id));
+                world.font(id)
+            })
             .map(|font| font.instantiate(ctx.variant(), ctx.size(), ctx.variations()))
             .filter(|font| !ctx.used().contains(font));
         if selection.is_some() {
@@ -1041,7 +1078,10 @@ where
         let first = ctx.first().map(|font| font.info());
         selection = book
             .select_fallback(first, ctx.variant(), text)
-            .and_then(|id| world.font(id))
+            .and_then(|id| {
+                ctx.note_world(WorldCall::Font(id));
+                world.font(id)
+            })
             .map(|font| font.instantiate(ctx.variant(), ctx.size(), ctx.variations()))
             .filter(|font| !ctx.used().contains(font));
     }
@@ -1702,10 +1742,10 @@ mod shape_cache {
     use typst_library::layout::Dir;
     use typst_library::text::{FontVariant, Lang, Region};
 
-    use super::ShapedGlyph;
+    use super::{ShapedGlyph, WorldCall};
 
     const SHARDS: usize = 16;
-    type Run = (FontVariant, Vec<ShapedGlyph>);
+    type Run = (FontVariant, Vec<ShapedGlyph>, std::sync::Arc<[WorldCall]>);
 
     #[derive(Default)]
     struct Shard {
@@ -1726,8 +1766,8 @@ mod shape_cache {
     static KEPT: LazyLock<Vec<Mutex<Shard>>> =
         LazyLock::new(|| (0..SHARDS).map(|_| Mutex::default()).collect());
 
-    fn size(glyphs: &[ShapedGlyph]) -> usize {
-        64 + std::mem::size_of_val(glyphs)
+    fn size(run: &Run) -> usize {
+        64 + std::mem::size_of_val(&run.1[..]) + std::mem::size_of_val(&run.2[..])
     }
 
     /// The key of a run's inputs (None: the cache is off).
@@ -1756,14 +1796,14 @@ mod shape_cache {
         Some(found)
     }
 
-    pub fn put(key: u128, variant: FontVariant, glyphs: &[ShapedGlyph]) {
+    pub fn put(key: u128, variant: FontVariant, glyphs: &[ShapedGlyph], calls: &[WorldCall]) {
         if let Ok(mut shard) = KEPT[key as usize % SHARDS].lock() {
-            insert(&mut shard, key, (variant, glyphs.to_vec()));
+            insert(&mut shard, key, (variant, glyphs.to_vec(), calls.into()));
         }
     }
 
     fn insert(shard: &mut Shard, key: u128, run: Run) {
-        let bytes = size(&run.1);
+        let bytes = size(&run);
         if bytes > *GEN_BYTES {
             return;
         }
