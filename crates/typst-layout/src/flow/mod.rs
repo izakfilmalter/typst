@@ -348,6 +348,18 @@ pub(crate) fn layout_flow_inc<'a>(
         } else {
             vec![]
         };
+    let diag = std::env::var_os("TYPST_INC_DIAG").is_some();
+    if diag {
+        for (log, from_old, delta) in &tails {
+            eprintln!(
+                "typst-inc-diag: tail shared from old child {} of {} (delta {}), first diff {}",
+                from_old,
+                log.flow.hashes.len(),
+                delta,
+                log.flow.hashes.iter().zip(&hashes).take_while(|(a, b)| a == b).count()
+            );
+        }
+    }
     let mut spliced = 0;
 
     let result = with_tees(engine, &recs, |engine| -> SourceResult<()> {
@@ -411,14 +423,30 @@ pub(crate) fn layout_flow_inc<'a>(
                     if old_snap.pos < *from_old
                         || new_snap.pos as isize != old_snap.pos as isize + delta
                     {
+                        if diag {
+                            eprintln!(
+                                "typst-inc-diag: region {j}: pos new {} old {} (tail from {})",
+                                new_snap.pos, old_snap.pos, from_old
+                            );
+                        }
                         continue;
                     }
                     let sn = *sig_new.get_or_insert_with(|| new_snap.sig(&hashes));
                     if sn != old_snap.sig(&log.flow.hashes) {
+                        if diag {
+                            eprintln!(
+                                "typst-inc-diag: region {j}: state differs: new {} floats {} tags {} fn {} fnspill {} spill / old {} {} {} {} {}",
+                                new_snap.floats.len(), new_snap.tags.len(), new_snap.footnotes.len(), new_snap.footnote_spill.len(), new_snap.spill.is_some(),
+                                old_snap.floats.len(), old_snap.tags.len(), old_snap.footnotes.len(), old_snap.footnote_spill.len(), old_snap.spill.is_some(),
+                            );
+                        }
                         continue;
                     }
                     let (from, to) = (old[j].marks, old[old.len() - 1].marks);
                     if !log.flow.calls.check(engine, from, to) {
+                        if diag {
+                            eprintln!("typst-inc-diag: region {j}: reads differ");
+                        }
                         continue;
                     }
                     let base = recs.marks();
