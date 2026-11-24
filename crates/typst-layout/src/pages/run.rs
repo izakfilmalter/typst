@@ -291,6 +291,17 @@ fn layout_page_run_impl(
             let mut marg = Vec::with_capacity(fragment.len());
             let mut pages = Vec::with_capacity(fragment.len());
             for (j, inner) in fragment.into_iter().enumerate() {
+                if std::env::var_os("TYPST_INC_DIAG").is_some() {
+                    if let Some(log) = marg_candidates.first() {
+                        if let (Some(old), Some(calls)) = (log.pages.get(j), log.marg.get(j)) {
+                            eprintln!(
+                                "typst-inc-diag: page {j}: size same {} reads failed/of {:?}",
+                                old.inner.size() == inner.size(),
+                                calls.diff_counts(engine, Marks::default(), calls.end())
+                            );
+                        }
+                    }
+                }
                 let found = marg_candidates.iter().take(2).find_map(|log| {
                     let old = log.pages.get(j)?;
                     let calls = log.marg.get(j)?;
