@@ -327,27 +327,6 @@ pub(crate) fn layout_flow_inc<'a>(
         }
     }
 
-    // (stage 3) Logs whose tail may be spliced on: how far each one's children
-    // and these share an end (the old index where the shared tail starts) and
-    // the shift from old child indices to new ones.
-    let tails: Vec<(std::sync::Arc<crate::incremental::RunLog<WorkSnap>>, usize, isize)> =
-        if crate::incremental::splice_on() {
-            inc.candidates
-                .iter()
-                .map(|log| {
-                    let old = &log.flow.hashes;
-                    let l = old
-                        .iter()
-                        .rev()
-                        .zip(hashes.iter().rev())
-                        .take_while(|(a, b)| a == b)
-                        .count();
-                    (log.clone(), old.len() - l, hashes.len() as isize - old.len() as isize)
-                })
-                .collect()
-        } else {
-            vec![]
-        };
     let diag = std::env::var_os("TYPST_INC_DIAG").is_some();
     if let Some(dir) = std::env::var_os("TYPST_INC_DUMP") {
         use std::io::Write;
@@ -368,17 +347,6 @@ pub(crate) fn layout_flow_inc<'a>(
                 };
                 let _ = writeln!(f, "{h:032x}\t{kind}\t{text}");
             }
-        }
-    }
-    if diag {
-        for (log, from_old, delta) in &tails {
-            eprintln!(
-                "typst-inc-diag: tail shared from old child {} of {} (delta {}), first diff {}",
-                from_old,
-                log.flow.hashes.len(),
-                delta,
-                log.flow.hashes.iter().zip(&hashes).take_while(|(a, b)| a == b).count()
-            );
         }
     }
     let mut spliced = 0;
@@ -428,73 +396,117 @@ pub(crate) fn layout_flow_inc<'a>(
             }
 
             // (stage 3) Where this layout has come back to an earlier one's
-            // state after the same region (the same position in a shared tail
-            // of children, the same queued state) and that layout's later
-            // regions' reads give the same results, its later regions are
-            // taken as they were.
+            // state after the same region (the same queued state, at a
+            // position that may be shifted by children inserted or removed
+            // before it), that layout's next regions are taken as they were
+            // while the children they looked at are the same (shifted) and
+            // their reads give the same results; composing goes on after them
+            // from their state.
             let j = logs.len() - 1;
-            if let Some(new_snap) = logs[j].snap.clone() {
+            if !crate::incremental::splice_on() {
+            } else if let Some(new_snap) = logs[j].snap.clone() {
                 let mut sig_new = None;
-                for (log, from_old, delta) in &tails {
+                let mut took = None;
+                for log in &inc.candidates {
                     let old = &log.flow.regions;
+                    let oh = &log.flow.hashes;
                     if j + 1 >= old.len() {
                         continue;
                     }
                     let Some(old_snap) = old[j].snap.as_deref() else { continue };
-                    if old_snap.pos < *from_old
-                        || new_snap.pos as isize != old_snap.pos as isize + delta
-                    {
-                        if diag {
-                            eprintln!(
-                                "typst-inc-diag: region {j}: pos new {} old {} (tail from {})",
-                                new_snap.pos, old_snap.pos, from_old
-                            );
-                        }
-                        continue;
-                    }
+                    let delta = new_snap.pos as isize - old_snap.pos as isize;
                     let sn = *sig_new.get_or_insert_with(|| new_snap.sig(&hashes));
-                    if sn != old_snap.sig(&log.flow.hashes) {
+                    if sn != old_snap.sig(oh) {
                         if diag {
-                            eprintln!(
-                                "typst-inc-diag: region {j}: state differs: new {} floats {} tags {} fn {} fnspill {} spill / old {} {} {} {} {}",
-                                new_snap.floats.len(), new_snap.tags.len(), new_snap.footnotes.len(), new_snap.footnote_spill.len(), new_snap.spill.is_some(),
-                                old_snap.floats.len(), old_snap.tags.len(), old_snap.footnotes.len(), old_snap.footnote_spill.len(), old_snap.spill.is_some(),
-                            );
+                            eprintln!("typst-inc-diag: region {j}: state differs");
                         }
                         continue;
                     }
-                    let (from, to) = (old[j].marks, old[old.len() - 1].marks);
-                    if !log.flow.calls.check(engine, from, to) {
-                        if diag {
-                            eprintln!("typst-inc-diag: region {j}: reads differ");
+                    let same = |i: usize| {
+                        let n = i as isize + delta;
+                        n >= 0 && hashes.get(n as usize) == Some(&oh[i])
+                    };
+                    // the regions whose children are the same and whose reads
+                    // give the same results; the last with a state to go on
+                    // from (or the end)
+                    let mut checked = old_snap.pos;
+                    let mut from = old[j].marks;
+                    let mut ok = 0;
+                    for (r, reg) in old.iter().enumerate().skip(j + 1) {
+                        let end = if reg.hw > oh.len() {
+                            if hashes.len() as isize - oh.len() as isize != delta {
+                                break;
+                            }
+                            oh.len()
+                        } else {
+                            reg.hw
+                        };
+                        if !(checked..end.max(checked)).all(same) {
+                            if diag {
+                                eprintln!("typst-inc-diag: region {j}: child changed before old region {r}'s end");
+                            }
+                            break;
                         }
+                        checked = checked.max(end);
+                        if !log.flow.calls.check(engine, from, reg.marks) {
+                            if diag {
+                                eprintln!("typst-inc-diag: region {j}: old region {r}'s reads differ");
+                            }
+                            break;
+                        }
+                        from = reg.marks;
+                        if r + 1 == old.len() || reg.snap.is_some() {
+                            ok = r;
+                        }
+                    }
+                    if ok == 0 {
                         continue;
                     }
+                    let last = ok + 1 == old.len();
+                    let restored = if last {
+                        None
+                    } else {
+                        let snap = old[ok].snap.as_deref().unwrap().shifted(delta);
+                        match Work::restore(&snap, &children) {
+                            Some(w) => Some(w),
+                            None => continue,
+                        }
+                    };
                     let base = recs.marks();
-                    log.flow.calls.replay_range(engine, from, to);
+                    let from = old[j].marks;
+                    log.flow.calls.replay_range(engine, from, old[ok].marks);
                     let n_new = children.len();
-                    for r in &old[j + 1..] {
-                        let hw = if r.hw > log.flow.hashes.len() {
+                    for r in &old[j + 1..=ok] {
+                        let hw = if r.hw > oh.len() {
                             n_new + 1
                         } else {
-                            (r.hw as isize + delta) as usize
+                            (r.hw as isize + delta).max(0) as usize
                         }
                         .max(logs.last().map_or(0, |x| x.hw));
                         logs.push(RegionLog {
                             frame: r.frame.clone(),
                             marks: r.marks.rebase(from, base),
                             hw,
-                            snap: r.snap.as_deref().map(|s| std::sync::Arc::new(s.shifted(*delta))),
+                            snap: r.snap.as_deref().map(|s| std::sync::Arc::new(s.shifted(delta))),
                         });
                         finished.push(r.frame.clone());
                         locator.next(&());
                         regions.next();
                     }
-                    spliced = old.len() - j - 1;
+                    spliced += ok - j;
+                    if diag {
+                        eprintln!("typst-inc-diag: region {j}: took old regions {}..={ok} (delta {delta})", j + 1);
+                    }
+                    took = Some(restored);
                     break;
                 }
-                if spliced > 0 {
-                    break;
+                match took {
+                    Some(None) => break,
+                    Some(Some(w)) => {
+                        work = w;
+                        // (the low-water mark stays this layout's own)
+                    }
+                    None => {}
                 }
             }
 
