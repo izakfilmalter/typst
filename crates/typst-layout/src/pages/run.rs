@@ -299,6 +299,10 @@ fn layout_page_run_impl(
                                 old.inner.size() == inner.size(),
                                 calls.diff_counts(engine, Marks::default(), calls.end())
                             );
+                            eprintln!(
+                                "typst-inc-diag: page {j}: failing {:?}",
+                                calls.failing_intr(engine, Marks::default(), calls.end())
+                            );
                         }
                     }
                 }

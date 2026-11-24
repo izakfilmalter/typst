@@ -163,6 +163,18 @@ impl Calls {
         ]
     }
 
+    /// (diagnostics) The failing introspector calls in `from..to`, by variant
+    /// (index into the call enum) and position.
+    pub fn failing_intr(&self, engine: &Engine, from: Marks, to: Marks) -> Vec<(usize, String)> {
+        let intr = engine.introspector.into_raw();
+        self.i.immutable[from.i..to.i]
+            .iter()
+            .enumerate()
+            .filter(|(_, (c, r))| !comemo::check(&intr, c, *r))
+            .map(|(k, (c, _))| (k, comemo::internal::Call::describe(c)))
+            .collect()
+    }
+
     /// Replays the calls up to `to` on `engine` (immutable ones sent to the
     /// sinks, mutable ones performed again).
     pub fn replay(&self, engine: &mut Engine, to: Marks) {
