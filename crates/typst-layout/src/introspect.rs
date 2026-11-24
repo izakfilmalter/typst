@@ -138,6 +138,10 @@ impl Introspector for PagedIntrospector {
         from: std::num::NonZeroUsize,
         to: std::num::NonZeroUsize,
     ) -> ecow::EcoVec<typst_library::foundations::Content> {
+        // (one page: from the page index `query_positions_on` keeps)
+        if from == to {
+            return Introspector::query_positions_on(self, selector, from).0.elems().clone();
+        }
         self.located(selector).in_pages(from, to)
     }
 
