@@ -327,6 +327,29 @@ pub(crate) fn layout_flow_inc<'a>(
         }
     }
 
+    // (stage 3) Logs whose tail may be spliced on: how far each one's children
+    // and these share an end (the old index where the shared tail starts) and
+    // the shift from old child indices to new ones.
+    let tails: Vec<(std::sync::Arc<crate::incremental::RunLog<WorkSnap>>, usize, isize)> =
+        if crate::incremental::splice_on() {
+            inc.candidates
+                .iter()
+                .map(|log| {
+                    let old = &log.flow.hashes;
+                    let l = old
+                        .iter()
+                        .rev()
+                        .zip(hashes.iter().rev())
+                        .take_while(|(a, b)| a == b)
+                        .count();
+                    (log.clone(), old.len() - l, hashes.len() as isize - old.len() as isize)
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+    let mut spliced = 0;
+
     let result = with_tees(engine, &recs, |engine| -> SourceResult<()> {
         // A flow taken whole from the log: its last region saw the end.
         if resumed > 0
@@ -371,18 +394,75 @@ pub(crate) fn layout_flow_inc<'a>(
                 break;
             }
 
+            // (stage 3) Where this layout has come back to an earlier one's
+            // state after the same region (the same position in a shared tail
+            // of children, the same queued state) and that layout's later
+            // regions' reads give the same results, its later regions are
+            // taken as they were.
+            let j = logs.len() - 1;
+            if let Some(new_snap) = logs[j].snap.clone() {
+                let mut sig_new = None;
+                for (log, from_old, delta) in &tails {
+                    let old = &log.flow.regions;
+                    if j + 1 >= old.len() {
+                        continue;
+                    }
+                    let Some(old_snap) = old[j].snap.as_deref() else { continue };
+                    if old_snap.pos < *from_old
+                        || new_snap.pos as isize != old_snap.pos as isize + delta
+                    {
+                        continue;
+                    }
+                    let sn = *sig_new.get_or_insert_with(|| new_snap.sig(&hashes));
+                    if sn != old_snap.sig(&log.flow.hashes) {
+                        continue;
+                    }
+                    let (from, to) = (old[j].marks, old[old.len() - 1].marks);
+                    if !log.flow.calls.check(engine, from, to) {
+                        continue;
+                    }
+                    let base = recs.marks();
+                    log.flow.calls.replay_range(engine, from, to);
+                    let n_new = children.len();
+                    for r in &old[j + 1..] {
+                        let hw = if r.hw > log.flow.hashes.len() {
+                            n_new + 1
+                        } else {
+                            (r.hw as isize + delta) as usize
+                        }
+                        .max(logs.last().map_or(0, |x| x.hw));
+                        logs.push(RegionLog {
+                            frame: r.frame.clone(),
+                            marks: r.marks.rebase(from, base),
+                            hw,
+                            snap: r.snap.as_deref().map(|s| std::sync::Arc::new(s.shifted(*delta))),
+                        });
+                        finished.push(r.frame.clone());
+                        locator.next(&());
+                        regions.next();
+                    }
+                    spliced = old.len() - j - 1;
+                    break;
+                }
+                if spliced > 0 {
+                    break;
+                }
+            }
+
             regions.next();
         }
         Ok(())
     });
     result?;
+    inc.spliced = spliced;
 
     if crate::incremental::log_on() {
         eprintln!(
-            "typst-inc: flow {} children, {} regions ({} taken): collect {} ms, compose {} ms",
+            "typst-inc: flow {} children, {} regions ({} taken, {} spliced): collect {} ms, compose {} ms",
             children.len(),
             finished.len(),
             resumed,
+            spliced,
             (t_compose - t_collect).as_millis(),
             t_compose.elapsed().as_millis()
         );
@@ -506,6 +586,45 @@ pub(crate) struct WorkSnap {
     footnote_spill: Vec<FootnoteSpill>,
     tags: Vec<usize>,
     skips: Vec<Location>,
+}
+
+impl WorkSnap {
+    /// (stage 3) A hash of the state relative to its position: what composing
+    /// on from it reads besides the children from `pos` on (the queued
+    /// children by offset and hash, the footnotes, the skips).
+    pub(crate) fn sig(&self, hashes: &[u128]) -> u128 {
+        let rel = |i: usize| (self.pos as isize - i as isize, hashes.get(i));
+        let mut skips: Vec<u128> =
+            self.skips.iter().map(typst_utils::hash128).collect();
+        skips.sort_unstable();
+        let fs: Vec<_> = self
+            .footnote_spill
+            .iter()
+            .map(|f| (f.lane, f.x, f.width, f.frames.as_slice()))
+            .collect();
+        typst_utils::hash128(&(
+            self.spill.as_ref().map(|s| s.sig(self.pos, hashes)),
+            self.floats.iter().map(|&i| rel(i)).collect::<Vec<_>>(),
+            self.tags.iter().map(|&i| rel(i)).collect::<Vec<_>>(),
+            &self.footnotes,
+            fs,
+            skips,
+        ))
+    }
+
+    /// (stage 3) The snapshot with every child index moved by `delta`.
+    pub(crate) fn shifted(&self, delta: isize) -> WorkSnap {
+        let sh = |i: usize| (i as isize + delta) as usize;
+        WorkSnap {
+            pos: sh(self.pos),
+            spill: self.spill.as_ref().map(|s| s.shifted(delta)),
+            floats: self.floats.iter().map(|&i| sh(i)).collect(),
+            footnotes: self.footnotes.clone(),
+            footnote_spill: self.footnote_spill.clone(),
+            tags: self.tags.iter().map(|&i| sh(i)).collect(),
+            skips: self.skips.clone(),
+        }
+    }
 }
 
 impl<'a, 'b> Work<'a, 'b> {

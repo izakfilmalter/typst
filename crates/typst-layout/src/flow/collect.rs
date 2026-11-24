@@ -849,6 +849,24 @@ impl<'a, 'b> MultiSpill<'a, 'b> {
 }
 
 impl SpillSnap {
+    /// (stage 3) A hash of the spill, its child by offset from `pos`.
+    pub fn sig(&self, pos: usize, hashes: &[u128]) -> u128 {
+        typst_utils::hash128(&(
+            pos as isize - self.idx as isize,
+            hashes.get(self.idx),
+            self.exist_non_empty_frame,
+            self.first,
+            self.full,
+            &self.backlog,
+            self.min_backlog_len,
+        ))
+    }
+
+    /// (stage 3) The spill with its child's index moved by `delta`.
+    pub fn shifted(&self, delta: isize) -> SpillSnap {
+        SpillSnap { idx: (self.idx as isize + delta) as usize, ..self.clone() }
+    }
+
     /// The spill again, of the child at its index in `all`.
     pub fn restore<'a, 'b>(&self, all: &'b [Child<'a>]) -> Option<MultiSpill<'a, 'b>> {
         let Some(Child::Multi(multi)) = all.get(self.idx) else { return None };
