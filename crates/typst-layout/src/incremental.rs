@@ -50,6 +50,13 @@ pub fn log_on() -> bool {
     *ON.get_or_init(|| std::env::var_os("TYPST_INC_LOG").is_some())
 }
 
+/// (stage 3) Whether a layout's tail may be spliced from a log
+/// (`TYPST_INC_SPLICE=0` turns it off).
+pub fn splice_on() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("TYPST_INC_SPLICE").as_deref() != Ok("0"))
+}
+
 /// The runs worth recording: at least this many children.
 pub fn min_children() -> usize {
     static N: OnceLock<usize> = OnceLock::new();
@@ -81,6 +88,18 @@ pub struct Marks {
     w: usize,
     s: usize,
     s_mut: usize,
+}
+
+impl Marks {
+    /// These marks moved from `from` to `to` (both at or before them).
+    pub fn rebase(self, from: Marks, to: Marks) -> Marks {
+        Marks {
+            i: self.i - from.i + to.i,
+            w: self.w - from.w + to.w,
+            s: self.s - from.s + to.s,
+            s_mut: self.s_mut - from.s_mut + to.s_mut,
+        }
+    }
 }
 
 impl Recs {
@@ -133,17 +152,22 @@ impl Calls {
     /// Replays the calls up to `to` on `engine` (immutable ones sent to the
     /// sinks, mutable ones performed again).
     pub fn replay(&self, engine: &mut Engine, to: Marks) {
+        self.replay_range(engine, Marks::default(), to);
+    }
+
+    /// Replays the calls in `from..to` on `engine`.
+    pub fn replay_range(&self, engine: &mut Engine, from: Marks, to: Marks) {
         let intr = engine.introspector.into_raw();
-        for (c, r) in &self.i.immutable[..to.i] {
+        for (c, r) in &self.i.immutable[from.i..to.i] {
             comemo::replay(&intr, c, *r);
         }
-        for (c, r) in &self.w.immutable[..to.w] {
+        for (c, r) in &self.w.immutable[from.w..to.w] {
             comemo::replay(&engine.world, c, *r);
         }
-        for (c, r) in &self.s.immutable[..to.s] {
+        for (c, r) in &self.s.immutable[from.s..to.s] {
             comemo::replay_mut(&mut engine.sink, c, *r);
         }
-        for c in &self.s.mutable[..to.s_mut] {
+        for c in &self.s.mutable[from.s_mut..to.s_mut] {
             comemo::replay_mut(&mut engine.sink, c, 0);
         }
     }
@@ -215,6 +239,8 @@ pub struct FlowInc<S> {
     pub candidates: Vec<Arc<RunLog<S>>>,
     /// The log resumed from and the number of regions taken from it.
     pub resumed: Option<(Arc<RunLog<S>>, usize)>,
+    /// (stage 3) The number of regions at the end spliced from a log.
+    pub spliced: usize,
     pub out: Option<FlowLog<S>>,
 }
 

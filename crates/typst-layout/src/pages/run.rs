@@ -267,7 +267,7 @@ fn layout_page_run_impl(
          -> SourceResult<(Vec<LayoutedPage>, RunLog<WorkSnap>, usize, usize)> {
             let mut locator = Locator::link(&link).split();
             let marg_candidates = candidates.clone();
-            let mut inc = FlowInc { candidates, resumed: None, out: None };
+            let mut inc = FlowInc { candidates, resumed: None, spliced: 0, out: None };
             let fragment = layout_flow_inc(
                 engine,
                 children,
@@ -283,7 +283,7 @@ fn layout_page_run_impl(
                 &mut inc,
             )?;
             let t_marg = std::time::Instant::now();
-            let resumed = inc.resumed.as_ref().map_or(0, |r| r.1);
+            let resumed = inc.resumed.as_ref().map_or(0, |r| r.1) + inc.spliced;
             // The marginals, page by page: a page's are taken from the newest
             // log whose page there had the same size and whose marginals' reads
             // give the same results (they read nothing else of the page).
