@@ -296,7 +296,27 @@ impl<S> FlowInc<S> {
     }
 }
 
-type Store<S> = Mutex<FxHashMap<u128, VecDeque<Arc<RunLog<S>>>>>;
+/// Run keys whose logs are kept (`TYPST_INC_KEYS`, default 2): past it the least recently used
+/// key's logs go. A planner trial lays the same unit out again and again, so a few keys are
+/// enough to resume each candidate from the one before it, across compiles.
+fn keys() -> usize {
+    static N: OnceLock<usize> = OnceLock::new();
+    *N.get_or_init(|| std::env::var("TYPST_INC_KEYS").ok().and_then(|v| v.parse().ok()).unwrap_or(2).max(1))
+}
+
+/// A run key's logs, the newest first, and when the key was last used.
+pub struct Kept<S> {
+    used: u64,
+    logs: VecDeque<Arc<RunLog<S>>>,
+}
+
+impl<S> Default for Kept<S> {
+    fn default() -> Self {
+        Self { used: 0, logs: VecDeque::new() }
+    }
+}
+
+type Store<S> = Mutex<(u64, FxHashMap<u128, Kept<S>>)>;
 
 /// The process's logs by run key, the newest first.
 pub fn store<S: Send + Sync + 'static>() -> &'static Store<S> {
@@ -308,22 +328,34 @@ pub fn store<S: Send + Sync + 'static>() -> &'static Store<S> {
 }
 
 pub fn candidates<S: Send + Sync + 'static>(key: u128) -> Vec<Arc<RunLog<S>>> {
-    store::<S>()
-        .lock()
-        .unwrap()
-        .get(&key)
-        .map(|q| q.iter().cloned().collect())
-        .unwrap_or_default()
+    let mut g = store::<S>().lock().unwrap();
+    g.0 += 1;
+    let tick = g.0;
+    match g.1.get_mut(&key) {
+        Some(k) => {
+            k.used = tick;
+            k.logs.iter().cloned().collect()
+        }
+        None => Vec::new(),
+    }
 }
 
 pub fn put<S: Send + Sync + 'static>(key: u128, log: RunLog<S>) {
     let mut g = store::<S>().lock().unwrap();
-    let q = g.entry(key).or_default();
-    q.push_front(Arc::new(log));
-    q.truncate(keep());
+    g.0 += 1;
+    let tick = g.0;
+    let k = g.1.entry(key).or_default();
+    k.used = tick;
+    k.logs.push_front(Arc::new(log));
+    k.logs.truncate(keep());
+    // (past the keys kept: the least recently used key's logs go)
+    while g.1.len() > keys() {
+        let Some(old) = g.1.iter().min_by_key(|(_, k)| k.used).map(|(key, _)| *key) else { break };
+        g.1.remove(&old);
+    }
 }
 
 /// Drops every log (`typst_layout::incremental_clear`).
 pub fn clear<S: Send + Sync + 'static>() {
-    store::<S>().lock().unwrap().clear();
+    store::<S>().lock().unwrap().1.clear();
 }
