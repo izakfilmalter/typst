@@ -51,10 +51,10 @@ pub fn log_on() -> bool {
 }
 
 /// (stage 3) Whether a layout's tail may be spliced from a log
-/// (`TYPST_INC_SPLICE=0` turns it off).
+/// (opt-in: `TYPST_INC_SPLICE=1`).
 pub fn splice_on() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var("TYPST_INC_SPLICE").as_deref() != Ok("0"))
+    *ON.get_or_init(|| std::env::var("TYPST_INC_SPLICE").as_deref() == Ok("1"))
 }
 
 /// The runs worth recording: at least this many children.
