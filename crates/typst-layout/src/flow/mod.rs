@@ -349,6 +349,27 @@ pub(crate) fn layout_flow_inc<'a>(
             vec![]
         };
     let diag = std::env::var_os("TYPST_INC_DIAG").is_some();
+    if let Some(dir) = std::env::var_os("TYPST_INC_DUMP") {
+        use std::io::Write;
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::path::Path::new(&dir).join(format!("flow-{n:03}.txt"));
+        if let Ok(mut f) = std::fs::File::create(path) {
+            for (c, h) in children.iter().zip(&hashes) {
+                let (kind, text) = match c {
+                    Child::Tag(t) => ("tag", format!("{:?}", t.location())),
+                    Child::Rel(..) => ("rel", String::new()),
+                    Child::Fr(..) => ("fr", String::new()),
+                    Child::Line(l) => ("line", line_text(&l.frame)),
+                    Child::Single(_) => ("single", String::new()),
+                    Child::Multi(_) => ("multi", String::new()),
+                    Child::Placed(_) => ("placed", String::new()),
+                    _ => ("other", String::new()),
+                };
+                let _ = writeln!(f, "{h:032x}\t{kind}\t{text}");
+            }
+        }
+    }
     if diag {
         for (log, from_old, delta) in &tails {
             eprintln!(
@@ -497,6 +518,21 @@ pub(crate) fn layout_flow_inc<'a>(
     }
     inc.out = Some(FlowLog { hashes, regions: logs, calls: recs.take() });
     Ok(Fragment::frames(finished))
+}
+
+/// (diagnostics) The text of a line's frame.
+fn line_text(frame: &Frame) -> String {
+    use typst_library::layout::FrameItem;
+    let mut out = String::new();
+    for (_, item) in frame.items() {
+        match item {
+            FrameItem::Text(t) => out.push_str(&t.text),
+            FrameItem::Group(g) => out.push_str(&line_text(&g.frame)),
+            FrameItem::Tag(_) => out.push('|'),
+            _ => out.push('#'),
+        }
+    }
+    out
 }
 
 /// Determine the flow's configuration.
