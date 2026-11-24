@@ -171,7 +171,12 @@ impl Calls {
             .iter()
             .enumerate()
             .filter(|(_, (c, r))| !comemo::check(&intr, c, *r))
-            .map(|(k, (c, _))| (k, comemo::internal::Call::describe(c)))
+            .map(|(k, (c, _))| {
+                typst_library::introspection::DIAG_PAGE.with(|d| d.set(true));
+                comemo::check(&intr, c, 0);
+                typst_library::introspection::DIAG_PAGE.with(|d| d.set(false));
+                (k, comemo::internal::Call::describe(c))
+            })
             .collect()
     }
 

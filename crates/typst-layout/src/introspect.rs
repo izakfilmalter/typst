@@ -125,7 +125,13 @@ impl Introspector for PagedIntrospector {
     }
 
     fn page(&self, location: Location) -> Option<NonZeroUsize> {
-        self.elements.position(location).map(|pos| pos.page)
+        let out = self.elements.position(location).map(|pos| pos.page);
+        if typst_library::introspection::DIAG_PAGE.with(|d| d.get()) {
+            let el = Introspector::query(self, &Selector::Location(location));
+            let what = el.first().map(|e| format!("{} {:?}", e.func().name(), e.label())).unwrap_or_default();
+            eprintln!("typst-inc-diag:   page({location:?}) = {out:?}: {what}");
+        }
+        out
     }
 
     fn position(&self, location: Location) -> Option<DocumentPosition> {

@@ -753,6 +753,11 @@ impl Clone for QueryCache {
     }
 }
 
+thread_local! {
+    /// (fork, diagnostics) While set, the paged introspector prints its `page` calls.
+    pub static DIAG_PAGE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// (fork) The matches of a query and where each one is (`query-pages`, `query-positions`):
 /// a document-wide index read with one tracked call instead of one per match. A template
 /// that indexes 12 000 line markers this way records one call where it recorded 12 000, and
