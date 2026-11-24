@@ -42,6 +42,7 @@ pub fn define(global: &mut Scope) {
     global.define_func::<query>();
     global.define_func::<query_pages>();
     global.define_func::<query_positions>();
+    global.define_func::<query_in>();
     global.define_func::<locate>();
     global.reset_category();
 }

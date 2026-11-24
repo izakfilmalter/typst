@@ -81,6 +81,16 @@ pub trait Introspector: Send + Sync {
     /// page's markers records (and validates) its page's matches, not the document's.
     fn query_positions_on(&self, selector: &Selector, page: NonZeroUsize) -> LocatedPositions;
 
+    /// (fork) The matches of a query on the pages `from..=to`, in the order of `query`,
+    /// without their pages or positions: a result that changes only when a match is added,
+    /// dropped or moves onto or off those pages, not when one moves on its page.
+    fn query_in_pages(
+        &self,
+        selector: &Selector,
+        from: NonZeroUsize,
+        to: NonZeroUsize,
+    ) -> EcoVec<Content>;
+
     /// (fork) The page counter's states at its updates (`selector`: the page counter's
     /// update selector), as `counter::sequence` computes them, without an engine: `None`
     /// when an update is a function (which needs one) or the introspector has no cache for
@@ -173,6 +183,10 @@ impl Introspector for EmptyIntrospector {
 
     fn query_positions_on(&self, _: &Selector, _: NonZeroUsize) -> LocatedPositions {
         LocatedPositions(Located::new(EcoVec::new(), |_| None, |_| None))
+    }
+
+    fn query_in_pages(&self, _: &Selector, _: NonZeroUsize, _: NonZeroUsize) -> EcoVec<Content> {
+        EcoVec::new()
     }
 
     fn page_counter_stops(&self, _: &Selector) -> Option<CounterStops> {
@@ -776,6 +790,17 @@ impl Located {
     /// The matches.
     pub fn elems(&self) -> &EcoVec<Content> {
         &self.0.elems
+    }
+
+    /// (fork) The matches on the pages `from..=to`, in this order.
+    pub fn in_pages(&self, from: NonZeroUsize, to: NonZeroUsize) -> EcoVec<Content> {
+        let r = &self.0;
+        r.elems
+            .iter()
+            .zip(&r.pages)
+            .filter(|(_, p)| p.is_some_and(|p| from <= p && p <= to))
+            .map(|(e, _)| e.clone())
+            .collect()
     }
 
     /// Each match's page (as `Introspector::page`).

@@ -112,6 +112,15 @@ impl Introspector for HtmlIntrospector {
         self.position(location).map(DocumentPosition::Html)
     }
 
+    fn query_in_pages(
+        &self,
+        selector: &Selector,
+        from: std::num::NonZeroUsize,
+        to: std::num::NonZeroUsize,
+    ) -> ecow::EcoVec<typst_library::foundations::Content> {
+        self.located(selector).in_pages(from, to)
+    }
+
     fn query_pages(
         &self,
         selector: &Selector,

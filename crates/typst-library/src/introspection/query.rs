@@ -220,6 +220,53 @@ pub fn query_pages(
         .collect())
 }
 
+/// (fork) `query(target)` limited to the matches on the pages `from` to `to` (both
+/// included), in the order of `query`: one tracked call whose result changes only when a
+/// match is added, dropped or moves onto or off those pages, never when one moves within
+/// its page. A page's function that needs the markers up to it (an index of what is open on
+/// it) reads them so, and stays valid while the pages before it only shift their lines.
+#[func(contextual, since = "unreleased")]
+pub fn query_in(
+    engine: &mut Engine,
+    context: Tracked<Context>,
+    span: Span,
+    /// What to query, as for `query`.
+    target: LocatableSelector,
+    /// The first page.
+    #[named]
+    from: NonZeroUsize,
+    /// The last page.
+    #[named]
+    to: NonZeroUsize,
+) -> HintedStrResult<Array> {
+    context.introspect()?;
+    let vec = engine.introspect(QueryInPagesIntrospection(target.0, from, to, span));
+    Ok(vec.into_iter().map(Value::Content).collect())
+}
+
+/// (fork) The matches of a selector on a range of pages.
+#[derive(Debug, Clone, PartialEq, Hash)]
+pub struct QueryInPagesIntrospection(pub Selector, pub NonZeroUsize, pub NonZeroUsize, pub Span);
+
+impl Introspect for QueryInPagesIntrospection {
+    type Output = EcoVec<Content>;
+
+    fn introspect(
+        &self,
+        _: &mut Engine,
+        introspector: Tracked<dyn Introspector + '_>,
+    ) -> Self::Output {
+        introspector.query_in_pages(&self.0, self.1, self.2)
+    }
+
+    fn diagnose(&self, history: &History<Self::Output>) -> SourceDiagnostic {
+        let lengths = history.as_ref().map(|l| l.len());
+        let things = format_selector(&self.0, "elements");
+        let what = eco_format!("number of {things} on pages {} to {}", self.1, self.2);
+        format_convergence_warning(self.3, &lengths, &what)
+    }
+}
+
 /// (fork) `query(target)` with each match's position: an array of `(element, position)`
 /// pairs in the order of `query`, the position as `element.location().position()` gives
 /// it. One introspection for the whole result (see `query-pages`).
