@@ -450,7 +450,10 @@ pub(crate) fn layout_flow_inc<'a>(
                         checked = checked.max(end);
                         if !log.flow.calls.check(engine, from, reg.marks) {
                             if diag {
-                                eprintln!("typst-inc-diag: region {j}: old region {r}'s reads differ");
+                                eprintln!(
+                                    "typst-inc-diag: region {j}: old region {r}'s reads differ (introspector, world, sink: failed/of) {:?}",
+                                    log.flow.calls.diff_counts(engine, from, reg.marks)
+                                );
                             }
                             break;
                         }
