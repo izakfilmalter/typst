@@ -233,10 +233,8 @@ pub fn query_in(
     /// What to query, as for `query`.
     target: LocatableSelector,
     /// The first page.
-    #[named]
     from: NonZeroUsize,
     /// The last page.
-    #[named]
     to: NonZeroUsize,
 ) -> HintedStrResult<Array> {
     context.introspect()?;
