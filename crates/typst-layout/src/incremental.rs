@@ -149,6 +149,20 @@ impl Calls {
                 .all(|(c, r)| comemo::check_mut(&engine.sink, c, *r))
     }
 
+    /// (diagnostics) How many calls in `from..to` give other results, of how
+    /// many, for the introspector, the world and the sink.
+    pub fn diff_counts(&self, engine: &Engine, from: Marks, to: Marks) -> [(usize, usize); 3] {
+        let intr = engine.introspector.into_raw();
+        let i = &self.i.immutable[from.i..to.i];
+        let w = &self.w.immutable[from.w..to.w];
+        let s = &self.s.immutable[from.s..to.s];
+        [
+            (i.iter().filter(|(c, r)| !comemo::check(&intr, c, *r)).count(), i.len()),
+            (w.iter().filter(|(c, r)| !comemo::check(&engine.world, c, *r)).count(), w.len()),
+            (s.iter().filter(|(c, r)| !comemo::check_mut(&engine.sink, c, *r)).count(), s.len()),
+        ]
+    }
+
     /// Replays the calls up to `to` on `engine` (immutable ones sent to the
     /// sinks, mutable ones performed again).
     pub fn replay(&self, engine: &mut Engine, to: Marks) {
