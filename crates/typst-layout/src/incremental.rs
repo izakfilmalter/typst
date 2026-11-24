@@ -340,6 +340,11 @@ pub fn candidates<S: Send + Sync + 'static>(key: u128) -> Vec<Arc<RunLog<S>>> {
     }
 }
 
+/// Marks the run key used now, keeping its logs (a layout taken whole from one of them).
+pub fn touch<S: Send + Sync + 'static>(key: u128) {
+    let _ = candidates::<S>(key);
+}
+
 pub fn put<S: Send + Sync + 'static>(key: u128, log: RunLog<S>) {
     let mut g = store::<S>().lock().unwrap();
     g.0 += 1;

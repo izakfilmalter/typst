@@ -264,7 +264,7 @@ fn layout_page_run_impl(
 
         let run = |engine: &mut Engine,
                    candidates: Vec<Arc<RunLog<WorkSnap>>>|
-         -> SourceResult<(Vec<LayoutedPage>, RunLog<WorkSnap>, usize, usize)> {
+         -> SourceResult<(Vec<LayoutedPage>, RunLog<WorkSnap>, usize, bool)> {
             let mut locator = Locator::link(&link).split();
             let marg_candidates = candidates.clone();
             let mut inc = FlowInc { candidates, resumed: None, spliced: 0, out: None };
@@ -328,11 +328,13 @@ fn layout_page_run_impl(
                 pages: pages.clone(),
                 marg,
             };
-            Ok((pages, log, resumed, reuse))
+            // (taken whole from one log: every region from its start, every page's marginals)
+            let whole = inc.spliced == 0 && resumed == pages.len() && reuse == pages.len();
+            Ok((pages, log, resumed, whole))
         };
 
         let candidates = incremental::candidates::<WorkSnap>(key);
-        let (pages, log, resumed, _) = run(&mut engine, candidates)?;
+        let (pages, log, resumed, whole) = run(&mut engine, candidates)?;
         if incremental::mode() == 2 && resumed > 0 {
             let (full, flog, _, _) = run(&mut engine, vec![])?;
             let h = |p: &LayoutedPage| {
@@ -363,7 +365,14 @@ fn layout_page_run_impl(
             incremental::put(key, flog);
             return Ok(full);
         }
-        incremental::put(key, log);
+        // (a layout taken whole from a log is that log again: not kept twice, so the logs kept
+        // stay distinct — with logs kept past a compile, a trial's next candidate still finds
+        // the last one's first iteration, laid out on the same empty introspection)
+        if whole {
+            incremental::touch::<WorkSnap>(key);
+        } else {
+            incremental::put(key, log);
+        }
         return Ok(pages);
     }
 
