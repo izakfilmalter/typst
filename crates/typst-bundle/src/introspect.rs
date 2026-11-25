@@ -136,6 +136,27 @@ impl Introspector for BundleIntrospector {
         typst_library::introspection::LocatedPositions(self.located(selector))
     }
 
+    fn query_positions_on(
+        &self,
+        selector: &Selector,
+        page: NonZeroUsize,
+    ) -> typst_library::introspection::LocatedPositions {
+        let by_page = self.located(selector).by_page();
+        typst_library::introspection::LocatedPositions(
+            by_page
+                .get(&page)
+                .cloned()
+                .unwrap_or_else(typst_library::introspection::Located::empty),
+        )
+    }
+
+    fn page_counter_stops(
+        &self,
+        _: &Selector,
+    ) -> Option<typst_library::introspection::CounterStops> {
+        None
+    }
+
     fn page_numbering(&self, location: Location) -> Option<&Numbering> {
         self.child(location)?.page_numbering(location)
     }
