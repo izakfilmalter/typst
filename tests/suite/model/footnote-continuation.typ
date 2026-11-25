@@ -44,6 +44,15 @@ X#footnote[#lines(10)]
 #show footnote.entry: it => par(hanging-indent: 1em, it)
 L#footnote(lane: 0)[#lines(9)] R#footnote(lane: 1)[Right.]
 
+--- footnote-continuation-indented-line paged ---
+// A continued part whose first line is indented further than the hanging
+// indent (a verse line) keeps its cue in the number slot at the area's edge.
+#set page(width: 160pt, height: 100pt)
+#set footnote(numbering: "a")
+#set footnote.entry(continuation: note => box(width: 1.4em)[(#counter(footnote).display(note.numbering))])
+#show footnote.entry: it => par(hanging-indent: 1.4em, it)
+A#footnote[#lines(5) \ #h(1.5em) Verse line. \ #h(1.5em) Verse line. \ #lines(1)]
+
 --- footnote-continuation-none paged ---
 // Without a cue (the default), the continued part starts plainly.
 #set page(width: 160pt, height: 100pt)

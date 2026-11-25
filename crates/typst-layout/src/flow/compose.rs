@@ -1462,12 +1462,17 @@ fn mark_continuations(
         marker.translate(Point::with_y(-marker_baseline));
 
         // Hang the cue before the first line of the continued part, aligned
-        // to its baseline.
+        // to its baseline. It stands in the number slot, which begins at the
+        // note area's own edge: a first line whose text is indented further
+        // (a verse line, `linebreak(); h(..)`) does not carry the cue in.
+        // Without a slot (the text at the edge), it hangs outside the area.
         let pos = match first_line(frame) {
             Some((baseline, _, end)) if config.columns.dir == Dir::RTL => {
-                Point::new(end, baseline)
+                Point::new(end.max(frame.width() - marker.width()), baseline)
             }
-            Some((baseline, start, _)) => Point::new(start - marker.width(), baseline),
+            Some((baseline, start, _)) => {
+                Point::new((start - marker.width()).min(Abs::zero()), baseline)
+            }
             None => Point::new(-marker.width(), marker_baseline),
         };
         frame.push_frame(pos, marker);
